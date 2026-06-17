@@ -149,6 +149,14 @@ jobs:
           #     the PRIVATE installer-base from ghcr; crane then pushes the per-
           #     arch tar and index-appends the final multi-arch tag:
           #     ghcr.io/blockcast/installer:${IMAGE_TAG}
+          #
+          # Pre-create the ARTIFACTS dir (_out) owned by the runner uid. The
+          # imager runs `docker run --user $(id -u) -v $PWD/_out:/out ...`; if
+          # _out is absent, the daemon auto-creates the bind-mount source as
+          # ROOT and the imager (non-root) then fails with "permission denied"
+          # writing installer-amd64.tar (observed run 27706173827).
+          mkdir -p _out && chmod 0777 _out
+
           make installer \
             PUSH=true \
             PLATFORM=linux/amd64 \
