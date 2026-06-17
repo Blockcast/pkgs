@@ -1,0 +1,165 @@
+# Build the Blockcast custom Talos kernel pkg with in-tree amt.c + CONFIG_AMT=m.
+#
+# Produces:
+#   ghcr.io/blockcast/kernel:v1.13.4-amt   (vmlinuz + /usr/lib/modules with
+#                                           amt.ko built in-tree as CONFIG_AMT=m
+#                                           and auto-signed by the build's own
+#                                           CONFIG_MODULE_SIG_ALL key, whose cert
+#                                           is embedded in the same vmlinuz)
+#
+# This is Stage 1 of "Option (a): in-tree amt.c, custom SIGNED Talos kernel"
+# (design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md).
+#
+# WHY a full kernel compile here:
+#   `make kernel` runs the upstream siderolabs/pkgs kernel build (vanilla
+#   linux-6.18.34 from cdn.kernel.org + Talos's vendored .config + patches +
+#   clang/LLVM). That is a ~17 GB / ~40 min full compile. `ubuntu-latest`'s
+#   ~14 GB rootfs OOMs mid-compile (root cause of the prior vanished-runner
+#   failure, memory `talos-amt-kmod-self-contained-build`), so we run on the
+#   on-prem `chromium-build` ARC scale set (dind, ~241 GB node ephemeral,
+#   500 Gi CephFS per-pod volume, maxRunners=1). Org runner-group `default`
+#   (visibility: all) makes `chromium-build` reachable from this fork.
+#
+# IMAGE TAG note (load-bearing):
+#   the pkgs Makefile tags the kernel image `ghcr.io/$USERNAME/kernel:$(TAG)`
+#   where TAG defaults to `git describe` (= v1.13.0-11-g969f61c on this branch).
+#   To emit the intended `:v1.13.4-amt` ref we OVERRIDE `TAG=v1.13.4-amt`.
+#   (IMAGE_TAG alone does NOT drive the kernel target tag — verified in Makefile.)
+
+name: build-amt-kernel-pkg
+
+on:
+  workflow_dispatch:
+    inputs:
+      talos_version:
+        description: 'Talos version tag (image tag suffix; e.g. v1.13.4)'
+        required: false
+        default: 'v1.13.4'
+        type: string
+      kver:
+        description: 'Vanilla kernel.org base version this pkgs SHA builds (e.g. 6.18.34)'
+        required: false
+        default: '6.18.34'
+        type: string
+  push:
+    branches:
+      - blockcast-amt-1.13.4
+    paths:
+      - 'kernel/build/blockcast-amt/**'
+      - 'kernel/build/pkg.yaml'
+      - 'kernel/build/config-amd64'
+      - '.github/workflows/build-amt-kernel-pkg.yml'
+
+concurrency:
+  group: build-amt-kernel-pkg-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: chromium-build
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout pkgs fork @ pinned SHA branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so `git describe` resolves (Makefile TAG)
+
+      - name: Resolve build params (allow workflow_dispatch overrides)
+        id: p
+        env:
+          IN_TALOS: ${{ inputs.talos_version }}
+          IN_KVER: ${{ inputs.kver }}
+        run: |
+          set -euo pipefail
+          TALOS="${IN_TALOS:-v1.13.4}"
+          KVER="${IN_KVER:-6.18.34}"
+          case "$TALOS" in v[0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad talos: $TALOS" >&2; exit 1 ;; esac
+          case "$KVER"  in [0-9]*.[0-9]*.[0-9]*)  : ;; *) echo "bad kver: $KVER"  >&2; exit 1 ;; esac
+          echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
+          echo "kver=$KVER"   >> "$GITHUB_OUTPUT"
+          echo "image_tag=${TALOS}-amt" >> "$GITHUB_OUTPUT"
+
+      - name: Assert vendored config matches kver (fail-loud guard)
+        env:
+          KVER: ${{ steps.p.outputs.kver }}
+        run: |
+          set -euo pipefail
+          # The vendored .config header carries the exact kernel version. If it
+          # diverges from the target kver, the build's olddefconfig would
+          # silently churn the config and poison MODVERSIONS CRCs (only caught
+          # at node-load). Fail loudly here instead. Same guard the linux-amt
+          # extension workflow uses.
+          grep -q "Linux/x86 ${KVER} Kernel Configuration" \
+            kernel/build/config-amd64 \
+            || { echo "kernel/build/config-amd64 is not for kernel ${KVER}; re-pin the pkgs SHA / re-vendor" >&2; exit 1; }
+          echo "config-amd64 header confirmed for kernel ${KVER}"
+
+      - name: Assert CONFIG_AMT=m is set (the one config flip)
+        run: |
+          set -euo pipefail
+          grep -q '^CONFIG_AMT=m$' kernel/build/config-amd64 \
+            || { echo "CONFIG_AMT=m not set in config-amd64 -- the flip is missing" >&2; exit 1; }
+          echo "CONFIG_AMT=m confirmed"
+
+      - name: Assert Blockcast in-tree AMT source overlay present
+        run: |
+          set -euo pipefail
+          # The AMT source is now a deterministic 3-file overlay (amt.c +
+          # net/amt.h + uapi/linux/amt.h), cp-ed over the vanilla in-tree files
+          # by kernel/build/pkg.yaml. The former amt.c-only diff patch dropped
+          # the header changes and failed to compile against stock 6.18.34
+          # headers; all three files must be present.
+          for f in amt.c net-amt.h uapi-amt.h; do
+            test -f "kernel/build/blockcast-amt/$f" \
+              || { echo "kernel/build/blockcast-amt/$f missing" >&2; exit 1; }
+          done
+          # And the pkg.yaml must actually overlay them.
+          grep -q 'cp -v /pkg/blockcast-amt/amt.c' kernel/build/pkg.yaml \
+            || { echo "kernel/build/pkg.yaml does not overlay /pkg/blockcast-amt -- the cp step is missing" >&2; exit 1; }
+          echo "Blockcast in-tree AMT overlay present: amt.c ($(wc -l < kernel/build/blockcast-amt/amt.c) lines), net/amt.h ($(wc -l < kernel/build/blockcast-amt/net-amt.h) lines), uapi/linux/amt.h ($(wc -l < kernel/build/blockcast-amt/uapi-amt.h) lines)"
+
+      - name: Resolve dind socket (ARC dind != /var/run/docker.sock)
+        id: dind
+        run: |
+          set -euo pipefail
+          # The ARC dind sidecar exposes Docker over a TCP/socket address in
+          # $DOCKER_HOST (NOT the host /var/run/docker.sock). The pkgs Makefile
+          # `docker buildx build` honours $DOCKER_HOST, so just surface it.
+          echo "DOCKER_HOST=${DOCKER_HOST:-<unset; falling back to default>}"
+          docker version || { echo "docker daemon not reachable -- check dind sidecar / DOCKER_HOST" >&2; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push kernel pkg (in-tree amt.c, auto-signed)
+        env:
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          # TAG override is required: the pkgs Makefile tags the kernel image
+          # ghcr.io/$USERNAME/kernel:$(TAG); default TAG = git describe. We want
+          # the human-meaningful :v1.13.4-amt ref.
+          make kernel \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            TAG="${IMAGE_TAG}" \
+            IMAGE_TAG="${IMAGE_TAG}"
+
+      - name: Report published image
+        env:
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+        run: |
+          echo "Published: ghcr.io/blockcast/kernel:${IMAGE_TAG}"
+          echo "Next: run build-amt-installer.yml with PKG_KERNEL=ghcr.io/blockcast/kernel:${IMAGE_TAG}"
