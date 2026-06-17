@@ -19,6 +19,20 @@ steps:
           patch -p1 < $patch || (echo "Failed to apply patch $patch" && exit 1)
           echo "Applied patch $patch"
         done
+      - |
+        # Deterministic overlay of Blockcast's in-tree AMT source. This REPLACES
+        # the wholesale amt.c-only `diff -u` patch (former 0006-amt-blockcast-oot.patch),
+        # which silently dropped the AMT header changes and so failed to compile
+        # against stock 6.18.29 headers. The canonical AMT feature is exactly three
+        # files (proven self-contained by the linux-amt talos-extension build):
+        #   drivers/net/amt.c, include/net/amt.h, include/uapi/linux/amt.h.
+        # All three already exist in vanilla 6.18.29; we overwrite them in place,
+        # so CONFIG_AMT=m picks up the Blockcast source with no Kbuild changes.
+        cd /src
+        cp -v /pkg/blockcast-amt/amt.c       drivers/net/amt.c
+        cp -v /pkg/blockcast-amt/net-amt.h   include/net/amt.h
+        cp -v /pkg/blockcast-amt/uapi-amt.h  include/uapi/linux/amt.h
+        echo "Overlaid Blockcast in-tree AMT source (amt.c + net/amt.h + uapi/linux/amt.h)"
     build:
       {{ if .BUILD_ARG_KERNEL_TARGET }}
       - |

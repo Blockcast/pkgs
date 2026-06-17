@@ -45,7 +45,8 @@ on:
     branches:
       - blockcast-amt-1.13.2
     paths:
-      - 'kernel/build/patches/0006-amt-blockcast-oot.patch'
+      - 'kernel/build/blockcast-amt/**'
+      - 'kernel/build/pkg.yaml'
       - 'kernel/build/config-amd64'
       - '.github/workflows/build-amt-kernel-pkg.yml'
 
@@ -103,12 +104,22 @@ jobs:
             || { echo "CONFIG_AMT=m not set in config-amd64 -- the flip is missing" >&2; exit 1; }
           echo "CONFIG_AMT=m confirmed"
 
-      - name: Assert amt.c-replace patch present
+      - name: Assert Blockcast in-tree AMT source overlay present
         run: |
           set -euo pipefail
-          test -f kernel/build/patches/0006-amt-blockcast-oot.patch \
-            || { echo "0006-amt-blockcast-oot.patch missing" >&2; exit 1; }
-          echo "amt.c-replace patch present ($(wc -l < kernel/build/patches/0006-amt-blockcast-oot.patch) lines)"
+          # The AMT source is now a deterministic 3-file overlay (amt.c +
+          # net/amt.h + uapi/linux/amt.h), cp-ed over the vanilla in-tree files
+          # by kernel/build/pkg.yaml. The former amt.c-only diff patch dropped
+          # the header changes and failed to compile against stock 6.18.29
+          # headers; all three files must be present.
+          for f in amt.c net-amt.h uapi-amt.h; do
+            test -f "kernel/build/blockcast-amt/$f" \
+              || { echo "kernel/build/blockcast-amt/$f missing" >&2; exit 1; }
+          done
+          # And the pkg.yaml must actually overlay them.
+          grep -q 'cp -v /pkg/blockcast-amt/amt.c' kernel/build/pkg.yaml \
+            || { echo "kernel/build/pkg.yaml does not overlay /pkg/blockcast-amt -- the cp step is missing" >&2; exit 1; }
+          echo "Blockcast in-tree AMT overlay present: amt.c ($(wc -l < kernel/build/blockcast-amt/amt.c) lines), net/amt.h ($(wc -l < kernel/build/blockcast-amt/net-amt.h) lines), uapi/linux/amt.h ($(wc -l < kernel/build/blockcast-amt/uapi-amt.h) lines)"
 
       - name: Resolve dind socket (ARC dind != /var/run/docker.sock)
         id: dind
