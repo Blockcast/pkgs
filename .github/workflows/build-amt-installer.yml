@@ -1,19 +1,31 @@
 # Compose the Blockcast custom Talos installer that consumes our custom kernel
-# pkg (ghcr.io/blockcast/kernel:v1.13.2-amt) via the overridable PKG_KERNEL
-# make var. NO Talos fork needed -- this checks out the stock siderolabs/talos
-# tag and only overrides PKG_KERNEL/PKGS.
+# pkg (ghcr.io/blockcast/kernel:v1.13.2-amt). Produces:
 #
-# Produces:
 #   ghcr.io/blockcast/installer:v1.13.2-amt
 #
 # Depends on build-amt-kernel-pkg.yml having published the kernel image first.
+# Design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md (Stage 2)
 #
-# Design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md  (Stage 2)
+# BUILD GRAPH (the subtlety the design doc under-specified): Talos `make
+# installer` does NOT build the installer from PKG_KERNEL directly. It composes
+# the final installer by running the `imager` tool against a prebuilt
+# `installer-base` image -- and the Makefile resolves BOTH under
+# REGISTRY_AND_USERNAME (= ghcr.io/blockcast here). The custom kernel is baked
+# into `installer-base` (its Dockerfile stage COPYs vmlinuz + /usr/lib/modules
+# FROM ${PKG_KERNEL}); the `imager` is just the stock, version-matched compose
+# tool and carries no kernel. So the job does three things:
+#   (1) mirror the stock siderolabs imager under ghcr.io/blockcast/imager:<tag>
+#       so `make installer`'s `docker pull` of it resolves,
+#   (2) build + push the custom installer-base (stock rootfs + our kernel),
+#   (3) `make installer`, which runs the imager (with -e GITHUB_TOKEN so it can
+#       pull the PRIVATE installer-base) and crane-pushes the final installer.
+# A first attempt that ran only `make installer PKG_KERNEL=...` failed at
+# image-installer with "ghcr.io/blockcast/imager:... not found" (run 27705504057).
 #
-# Runner: the installer compose is LIGHT (no kernel compile -- it COPYs vmlinuz
-# + modules out of PKG_KERNEL). `ubuntu-latest` would suffice, but we use
-# `chromium-build` for consistency with Workflow 1 and to guarantee a dind that
-# can pull the (private) kernel image with the job's GITHUB_TOKEN.
+# Runner: the installer-base build COPYs a prebuilt kernel pkg (no kernel
+# compile) and the compose is light, but we use `chromium-build` for consistency
+# with build-amt-kernel-pkg and to guarantee a dind that can pull the (private)
+# kernel/installer-base images with the job's GITHUB_TOKEN.
 
 name: build-amt-installer
 
@@ -31,7 +43,7 @@ on:
         default: 'v1.13.0-11-g969f61c'
         type: string
       kernel_image:
-        description: 'Custom kernel image ref from Workflow 1'
+        description: 'Custom kernel image ref from build-amt-kernel-pkg'
         required: false
         default: 'ghcr.io/blockcast/kernel:v1.13.2-amt'
         type: string
@@ -43,7 +55,7 @@ concurrency:
 jobs:
   installer:
     runs-on: chromium-build
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
@@ -81,24 +93,62 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to ghcr (pull private kernel image + push installer)
+      - name: Install crane (required by talos `make installer`; not on the runner)
+        run: |
+          set -euo pipefail
+          # Talos Makefile assumes `crane` on PATH (Makefile lists it as a
+          # required tool, no bootstrap). Install the release binary into a
+          # user-writable dir and prepend to PATH for subsequent steps.
+          CRANE_VER="v0.20.2"
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VER}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xzf - -C "$RUNNER_TEMP/bin" crane
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/crane" version || true
+
+      - name: Login to ghcr (pull private kernel/installer-base + push)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build + push installer with custom kernel
+      - name: Build + push installer (mirror imager -> installer-base w/ custom kernel -> installer)
         env:
           TALOS: ${{ steps.p.outputs.talos }}
           PKGS: ${{ steps.p.outputs.pkgs }}
           PKG_KERNEL: ${{ steps.p.outputs.kimg }}
           IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # PKG_KERNEL is a clean overridable seam in the Talos Makefile
-          # (Makefile:54 -- FROM ${PKG_KERNEL} in the Dockerfile). Everything
-          # else is stock v1.13.2.
+
+          # (1) Mirror the stock siderolabs imager under our name+tag so that
+          #     `make installer`'s `docker pull ghcr.io/blockcast/imager:<tag>`
+          #     resolves. The imager carries no kernel -- it's the stock,
+          #     version-matched compose tool, so a re-tag is faithful.
+          docker pull "ghcr.io/siderolabs/imager:${TALOS}"
+          docker tag  "ghcr.io/siderolabs/imager:${TALOS}" "ghcr.io/blockcast/imager:${IMAGE_TAG}"
+          docker push "ghcr.io/blockcast/imager:${IMAGE_TAG}"
+
+          # (2) Build + push the custom installer-base: stock v1.13.2 rootfs +
+          #     our signed AMT kernel, injected via the PKG_KERNEL build-arg
+          #     seam (COMMON_ARGS += --build-arg=PKG_KERNEL). buildx pulls the
+          #     private kernel pkg using the daemon creds from the login step.
+          make installer-base \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            PKG_KERNEL="${PKG_KERNEL}" \
+            PKGS="${PKGS}" \
+            TAG="${IMAGE_TAG}"
+
+          # (3) Compose + push the installer. `image-installer` pulls our imager
+          #     and runs it with `-e GITHUB_TOKEN`, which the imager uses to pull
+          #     the PRIVATE installer-base from ghcr; crane then pushes the per-
+          #     arch tar and index-appends the final multi-arch tag:
+          #     ghcr.io/blockcast/installer:${IMAGE_TAG}
           make installer \
             PUSH=true \
             PLATFORM=linux/amd64 \
