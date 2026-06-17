@@ -106,6 +106,25 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/crane" version || true
 
+      - name: Add in-tree AMT module to Talos module allowlist
+        run: |
+          set -euo pipefail
+          # Talos curates which kernel-pkg modules ship in the installer rootfs
+          # via hack/modules-amd64.txt: the Dockerfile `depmod-amd64` stage COPYs
+          # ALL modules from the kernel pkg but then installs ONLY the modules
+          # listed in that file and depmods over that curated set. `amt` is not in
+          # the stock list (Talos ships a minimal set -- even geneve/gtp/vxlan are
+          # excluded), so amt.ko -- though correctly built + packaged in our kernel
+          # pkg via CONFIG_AMT=m -- gets dropped from the installed rootfs, and the
+          # node fails the kernel.modules autoload with modprobe "module not found"
+          # (observed on the k8s-data-2 canary). amt.ko has NO module dependencies
+          # (its deps are built-in: CONFIG_NET_UDP_TUNNEL=y), confirmed via the
+          # kernel pkg's modules.dep (`kernel/drivers/net/amt.ko:` empty RHS), so a
+          # single allowlist entry suffices.
+          F=hack/modules-amd64.txt
+          grep -qxF 'kernel/drivers/net/amt.ko' "$F" || echo 'kernel/drivers/net/amt.ko' >> "$F"
+          echo "amt allowlist entry:"; grep -n 'amt' "$F"
+
       - name: Login to ghcr (pull private kernel/installer-base + push)
         uses: docker/login-action@v3
         with:
