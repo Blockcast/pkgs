@@ -1,0 +1,116 @@
+# Compose the Blockcast custom Talos installer that consumes our custom kernel
+# pkg (ghcr.io/blockcast/kernel:v1.13.2-amt) via the overridable PKG_KERNEL
+# make var. NO Talos fork needed -- this checks out the stock siderolabs/talos
+# tag and only overrides PKG_KERNEL/PKGS.
+#
+# Produces:
+#   ghcr.io/blockcast/installer:v1.13.2-amt
+#
+# Depends on build-amt-kernel-pkg.yml having published the kernel image first.
+#
+# Design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md  (Stage 2)
+#
+# Runner: the installer compose is LIGHT (no kernel compile -- it COPYs vmlinuz
+# + modules out of PKG_KERNEL). `ubuntu-latest` would suffice, but we use
+# `chromium-build` for consistency with Workflow 1 and to guarantee a dind that
+# can pull the (private) kernel image with the job's GITHUB_TOKEN.
+
+name: build-amt-installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      talos_version:
+        description: 'siderolabs/talos tag to check out (e.g. v1.13.2)'
+        required: false
+        default: 'v1.13.2'
+        type: string
+      pkgs_sha:
+        description: 'PKGS pin Talos uses (e.g. v1.13.0-11-g969f61c)'
+        required: false
+        default: 'v1.13.0-11-g969f61c'
+        type: string
+      kernel_image:
+        description: 'Custom kernel image ref from Workflow 1'
+        required: false
+        default: 'ghcr.io/blockcast/kernel:v1.13.2-amt'
+        type: string
+
+concurrency:
+  group: build-amt-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    runs-on: chromium-build
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Resolve build params
+        id: p
+        env:
+          IN_TALOS: ${{ inputs.talos_version }}
+          IN_PKGS: ${{ inputs.pkgs_sha }}
+          IN_KIMG: ${{ inputs.kernel_image }}
+        run: |
+          set -euo pipefail
+          TALOS="${IN_TALOS:-v1.13.2}"
+          PKGS="${IN_PKGS:-v1.13.0-11-g969f61c}"
+          KIMG="${IN_KIMG:-ghcr.io/blockcast/kernel:v1.13.2-amt}"
+          case "$TALOS" in v[0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad talos: $TALOS" >&2; exit 1 ;; esac
+          echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
+          echo "pkgs=$PKGS"   >> "$GITHUB_OUTPUT"
+          echo "kimg=$KIMG"   >> "$GITHUB_OUTPUT"
+          echo "image_tag=${TALOS}-amt" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout siderolabs/talos @ tag
+        uses: actions/checkout@v4
+        with:
+          repository: siderolabs/talos
+          ref: ${{ steps.p.outputs.talos }}
+          fetch-depth: 0
+
+      - name: Resolve dind socket
+        run: |
+          set -euo pipefail
+          echo "DOCKER_HOST=${DOCKER_HOST:-<unset; default>}"
+          docker version || { echo "docker daemon not reachable -- check dind / DOCKER_HOST" >&2; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr (pull private kernel image + push installer)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push installer with custom kernel
+        env:
+          TALOS: ${{ steps.p.outputs.talos }}
+          PKGS: ${{ steps.p.outputs.pkgs }}
+          PKG_KERNEL: ${{ steps.p.outputs.kimg }}
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          # PKG_KERNEL is a clean overridable seam in the Talos Makefile
+          # (Makefile:54 -- FROM ${PKG_KERNEL} in the Dockerfile). Everything
+          # else is stock v1.13.2.
+          make installer \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            PKG_KERNEL="${PKG_KERNEL}" \
+            PKGS="${PKGS}" \
+            TAG="${IMAGE_TAG}"
+
+      - name: Report published image
+        env:
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+        run: |
+          echo "Published: ghcr.io/blockcast/installer:${IMAGE_TAG}"
+          echo "Next: Gate-4 canary on k8s-data-2 with install.image=ghcr.io/blockcast/installer:${IMAGE_TAG}"

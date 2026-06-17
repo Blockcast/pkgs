@@ -2634,7 +2634,7 @@ CONFIG_GENEVE=y
 # CONFIG_BAREUDP is not set
 # CONFIG_GTP is not set
 # CONFIG_PFCP is not set
-# CONFIG_AMT is not set
+CONFIG_AMT=m
 # CONFIG_MACSEC is not set
 CONFIG_NETCONSOLE=y
 # CONFIG_NETCONSOLE_DYNAMIC is not set
