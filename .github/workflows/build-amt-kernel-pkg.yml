@@ -1,13 +1,15 @@
-# Build the Blockcast custom Talos kernel pkg with in-tree amt.c + CONFIG_AMT=m.
+# Build the Blockcast custom Talos kernel pkg: the STOCK Talos kernel with one
+# config addition -- CONFIG_SYSTEM_TRUSTED_KEYS=<blockcast cert> -- so the kernel
+# TRUSTS the Blockcast module-signing key. amt is NOT built in-tree; it ships as
+# a separately-built, blockcast-signed Talos system extension (amt-kmod) that the
+# deploy kernel accepts under module.sig_enforce=1 because of the trusted cert.
 #
 # Produces:
-#   ghcr.io/blockcast/kernel:v1.13.4-amt   (vmlinuz + /usr/lib/modules with
-#                                           amt.ko built in-tree as CONFIG_AMT=m
-#                                           and auto-signed by the build's own
-#                                           CONFIG_MODULE_SIG_ALL key, whose cert
-#                                           is embedded in the same vmlinuz)
+#   ghcr.io/blockcast/kernel:v1.13.4-amt   (vmlinuz whose trusted keyring embeds
+#                                           the Blockcast signing cert; no amt
+#                                           in-tree -- CONFIG_AMT is unset)
 #
-# This is Stage 1 of "Option (a): in-tree amt.c, custom SIGNED Talos kernel"
+# This is Stage 1 of "Option (b): extension + persistent signing key"
 # (design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md).
 #
 # WHY a full kernel compile here:
@@ -45,7 +47,7 @@ on:
     branches:
       - blockcast-amt-1.13.4
     paths:
-      - 'kernel/build/blockcast-amt/**'
+      - 'kernel/build/certs/**'
       - 'kernel/build/pkg.yaml'
       - 'kernel/build/config-amd64'
       - '.github/workflows/build-amt-kernel-pkg.yml'
@@ -97,29 +99,30 @@ jobs:
             || { echo "kernel/build/config-amd64 is not for kernel ${KVER}; re-pin the pkgs SHA / re-vendor" >&2; exit 1; }
           echo "config-amd64 header confirmed for kernel ${KVER}"
 
-      - name: Assert CONFIG_AMT=m is set (the one config flip)
+      - name: Assert CONFIG_SYSTEM_TRUSTED_KEYS=blockcast cert (the Option-B flip)
         run: |
           set -euo pipefail
-          grep -q '^CONFIG_AMT=m$' kernel/build/config-amd64 \
-            || { echo "CONFIG_AMT=m not set in config-amd64 -- the flip is missing" >&2; exit 1; }
-          echo "CONFIG_AMT=m confirmed"
+          grep -q '^CONFIG_SYSTEM_TRUSTED_KEYS="certs/blockcast_signing_cert.pem"$' kernel/build/config-amd64 \
+            || { echo "CONFIG_SYSTEM_TRUSTED_KEYS not set to the blockcast cert in config-amd64 -- the Option-B flip is missing" >&2; exit 1; }
+          # Option B ships amt OUT-OF-tree as a signed extension. Guard against an
+          # accidental in-tree CONFIG_AMT=m (unnecessary; would double-provide amt).
+          if grep -q '^CONFIG_AMT=m$' kernel/build/config-amd64; then
+            echo "CONFIG_AMT=m is set but Option B expects amt out-of-tree (extension); unset it" >&2; exit 1
+          fi
+          echo "CONFIG_SYSTEM_TRUSTED_KEYS=blockcast cert confirmed; CONFIG_AMT not in-tree"
 
-      - name: Assert Blockcast in-tree AMT source overlay present
+      - name: Assert blockcast signing cert present + overlaid into kernel certs/
         run: |
           set -euo pipefail
-          # The AMT source is now a deterministic 3-file overlay (amt.c +
-          # net/amt.h + uapi/linux/amt.h), cp-ed over the vanilla in-tree files
-          # by kernel/build/pkg.yaml. The former amt.c-only diff patch dropped
-          # the header changes and failed to compile against stock 6.18.34
-          # headers; all three files must be present.
-          for f in amt.c net-amt.h uapi-amt.h; do
-            test -f "kernel/build/blockcast-amt/$f" \
-              || { echo "kernel/build/blockcast-amt/$f missing" >&2; exit 1; }
-          done
-          # And the pkg.yaml must actually overlay them.
-          grep -q 'cp -v /pkg/blockcast-amt/amt.c' kernel/build/pkg.yaml \
-            || { echo "kernel/build/pkg.yaml does not overlay /pkg/blockcast-amt -- the cp step is missing" >&2; exit 1; }
-          echo "Blockcast in-tree AMT overlay present: amt.c ($(wc -l < kernel/build/blockcast-amt/amt.c) lines), net/amt.h ($(wc -l < kernel/build/blockcast-amt/net-amt.h) lines), uapi/linux/amt.h ($(wc -l < kernel/build/blockcast-amt/uapi-amt.h) lines)"
+          # Option B: the deploy kernel must TRUST the Blockcast module-signing
+          # key. The public cert is committed and kernel/build/pkg.yaml copies it
+          # into the kernel source's certs/ dir (cp -v /pkg/certs/* certs/) so
+          # CONFIG_SYSTEM_TRUSTED_KEYS embeds it in the trusted keyring in vmlinuz.
+          test -f kernel/build/certs/blockcast_signing_cert.pem \
+            || { echo "kernel/build/certs/blockcast_signing_cert.pem missing" >&2; exit 1; }
+          grep -q 'cp -v /pkg/certs/\* certs/' kernel/build/pkg.yaml \
+            || { echo "kernel/build/pkg.yaml does not overlay /pkg/certs into the kernel certs/ dir" >&2; exit 1; }
+          echo "blockcast signing cert present + overlaid into kernel certs/"
 
       - name: Resolve dind socket (ARC dind != /var/run/docker.sock)
         id: dind
@@ -141,7 +144,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build + push kernel pkg (in-tree amt.c, auto-signed)
+      - name: Build + push kernel pkg (stock kernel; trusts blockcast cert)
         env:
           IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
         run: |
