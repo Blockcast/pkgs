@@ -82,7 +82,7 @@ jobs:
           case "$KVER"  in [0-9]*.[0-9]*.[0-9]*)  : ;; *) echo "bad kver: $KVER"  >&2; exit 1 ;; esac
           echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
           echo "kver=$KVER"   >> "$GITHUB_OUTPUT"
-          echo "image_tag=${TALOS}-amt" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${TALOS}-amt-intree" >> "$GITHUB_OUTPUT"
 
       - name: Assert vendored config matches kver (fail-loud guard)
         env:
@@ -99,17 +99,21 @@ jobs:
             || { echo "kernel/build/config-amd64 is not for kernel ${KVER}; re-pin the pkgs SHA / re-vendor" >&2; exit 1; }
           echo "config-amd64 header confirmed for kernel ${KVER}"
 
-      - name: Assert CONFIG_SYSTEM_TRUSTED_KEYS=blockcast cert (the Option-B flip)
+      - name: Assert in-tree amt config (CONFIG_AMT=m + trusted cert)
         run: |
           set -euo pipefail
           grep -q '^CONFIG_SYSTEM_TRUSTED_KEYS="certs/blockcast_signing_cert.pem"$' kernel/build/config-amd64 \
-            || { echo "CONFIG_SYSTEM_TRUSTED_KEYS not set to the blockcast cert in config-amd64 -- the Option-B flip is missing" >&2; exit 1; }
-          # Option B ships amt OUT-OF-tree as a signed extension. Guard against an
-          # accidental in-tree CONFIG_AMT=m (unnecessary; would double-provide amt).
-          if grep -q '^CONFIG_AMT=m$' kernel/build/config-amd64; then
-            echo "CONFIG_AMT=m is set but Option B expects amt out-of-tree (extension); unset it" >&2; exit 1
-          fi
-          echo "CONFIG_SYSTEM_TRUSTED_KEYS=blockcast cert confirmed; CONFIG_AMT not in-tree"
+            || { echo "CONFIG_SYSTEM_TRUSTED_KEYS not set to the blockcast cert in config-amd64" >&2; exit 1; }
+          # In-tree amt: CONFIG_AMT=m builds Blockcast's amt.c (patch 0006) inside
+          # the kernel build, so amt.ko is auto-signed by the kernel's own build
+          # key (CONFIG_MODULE_SIG_ALL) and its struct module ABI matches the
+          # running kernel by construction -- no vanilla-vs-pkgs 0x4c0/0x500 drift.
+          # REQUIRE the in-tree flip (the inverse of the old Option-B guard).
+          grep -q '^CONFIG_AMT=m$' kernel/build/config-amd64 \
+            || { echo "CONFIG_AMT=m missing -- in-tree amt flip not applied to config-amd64" >&2; exit 1; }
+          test -f kernel/build/patches/0006-amt-blockcast-intree.patch \
+            || { echo "0006-amt-blockcast-intree.patch missing" >&2; exit 1; }
+          echo "in-tree amt config confirmed: CONFIG_AMT=m + 0006 patch + trusted cert"
 
       - name: Assert blockcast signing cert present + overlaid into kernel certs/
         run: |
@@ -144,6 +148,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Login to registry.blockcast.net (on-prem buildx cache)
+        uses: docker/login-action@v3
+        with:
+          registry: registry.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
       - name: Build + push kernel pkg (stock kernel; trusts blockcast cert)
         env:
           IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
@@ -152,13 +163,23 @@ jobs:
           # TAG override is required: the pkgs Makefile tags the kernel image
           # ghcr.io/$USERNAME/kernel:$(TAG); default TAG = git describe. We want
           # the human-meaningful :v1.13.4-amt ref.
+          # On-prem registry-backed buildx cache (registry.blockcast.net / Harbor,
+          # authed above with the org HARBOR_* secrets) so the ~30min full kernel
+          # compile is reused across runs with no external round-trip. CI_ARGS is
+          # the pkgs Makefile pass-through appended to `docker buildx build`
+          # (Makefile line ~196). NOTE: type=gha was rejected — the on-prem
+          # gha-cache redirect is a Runner.Worker.dll patch baked only into the VM
+          # runners, not the ARC `chromium-build` pod, so type=gha would hit
+          # GitHub's external cache here. Registry cache needs no runner patch.
+          CACHE=registry.blockcast.net/blockcast/amt-kernel-buildcache
           make kernel \
             PUSH=true \
             PLATFORM=linux/amd64 \
             REGISTRY=ghcr.io \
             USERNAME=blockcast \
             TAG="${IMAGE_TAG}" \
-            IMAGE_TAG="${IMAGE_TAG}"
+            IMAGE_TAG="${IMAGE_TAG}" \
+            CI_ARGS="--cache-from=type=registry,ref=${CACHE} --cache-to=type=registry,ref=${CACHE},mode=max"
 
       - name: Report published image
         env:
