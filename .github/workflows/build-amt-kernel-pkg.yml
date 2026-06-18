@@ -148,6 +148,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Login to registry.blockcast.net (on-prem buildx cache)
+        uses: docker/login-action@v3
+        with:
+          registry: registry.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
       - name: Build + push kernel pkg (stock kernel; trusts blockcast cert)
         env:
           IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
@@ -156,12 +163,15 @@ jobs:
           # TAG override is required: the pkgs Makefile tags the kernel image
           # ghcr.io/$USERNAME/kernel:$(TAG); default TAG = git describe. We want
           # the human-meaningful :v1.13.4-amt ref.
-          # Registry-backed buildx cache (ghcr; the workflow already auths to it)
-          # so the ~hours full kernel compile is reused across runs. CI_ARGS is the
-          # pkgs Makefile pass-through appended to `docker buildx build` (Makefile
-          # line ~196). On-prem alternative: point CACHE at registry.blockcast.net
-          # once the runner has push creds for it.
-          CACHE=ghcr.io/blockcast/amt-kernel-buildcache
+          # On-prem registry-backed buildx cache (registry.blockcast.net / Harbor,
+          # authed above with the org HARBOR_* secrets) so the ~30min full kernel
+          # compile is reused across runs with no external round-trip. CI_ARGS is
+          # the pkgs Makefile pass-through appended to `docker buildx build`
+          # (Makefile line ~196). NOTE: type=gha was rejected — the on-prem
+          # gha-cache redirect is a Runner.Worker.dll patch baked only into the VM
+          # runners, not the ARC `chromium-build` pod, so type=gha would hit
+          # GitHub's external cache here. Registry cache needs no runner patch.
+          CACHE=registry.blockcast.net/blockcast/amt-kernel-buildcache
           make kernel \
             PUSH=true \
             PLATFORM=linux/amd64 \
