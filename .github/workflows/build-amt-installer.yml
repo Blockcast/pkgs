@@ -1,7 +1,7 @@
 # Compose the Blockcast custom Talos installer that consumes our custom kernel
-# pkg (ghcr.io/blockcast/kernel:v1.13.2-amt). Produces:
+# pkg (ghcr.io/blockcast/kernel:v1.13.4-amt). Produces:
 #
-#   ghcr.io/blockcast/installer:v1.13.2-amt
+#   ghcr.io/blockcast/installer:v1.13.4-amt
 #
 # Depends on build-amt-kernel-pkg.yml having published the kernel image first.
 # Design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md (Stage 2)
@@ -33,19 +33,19 @@ on:
   workflow_dispatch:
     inputs:
       talos_version:
-        description: 'siderolabs/talos tag to check out (e.g. v1.13.2)'
+        description: 'siderolabs/talos tag to check out (e.g. v1.13.4)'
         required: false
-        default: 'v1.13.2'
+        default: 'v1.13.4'
         type: string
       pkgs_sha:
-        description: 'PKGS pin Talos uses (e.g. v1.13.0-11-g969f61c)'
+        description: 'PKGS pin Talos uses (e.g. v1.13.0-28-g54ec9fc)'
         required: false
-        default: 'v1.13.0-11-g969f61c'
+        default: 'v1.13.0-28-g54ec9fc'
         type: string
       kernel_image:
         description: 'Custom kernel image ref from build-amt-kernel-pkg'
         required: false
-        default: 'ghcr.io/blockcast/kernel:v1.13.2-amt'
+        default: 'ghcr.io/blockcast/kernel:v1.13.4-amt'
         type: string
 
 concurrency:
@@ -68,9 +68,9 @@ jobs:
           IN_KIMG: ${{ inputs.kernel_image }}
         run: |
           set -euo pipefail
-          TALOS="${IN_TALOS:-v1.13.2}"
-          PKGS="${IN_PKGS:-v1.13.0-11-g969f61c}"
-          KIMG="${IN_KIMG:-ghcr.io/blockcast/kernel:v1.13.2-amt}"
+          TALOS="${IN_TALOS:-v1.13.4}"
+          PKGS="${IN_PKGS:-v1.13.0-28-g54ec9fc}"
+          KIMG="${IN_KIMG:-ghcr.io/blockcast/kernel:v1.13.4-amt}"
           case "$TALOS" in v[0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad talos: $TALOS" >&2; exit 1 ;; esac
           echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
           echo "pkgs=$PKGS"   >> "$GITHUB_OUTPUT"
@@ -132,7 +132,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build + push installer (mirror imager -> installer-base w/ custom kernel -> installer)
+      - name: Build + push installer (custom imager carries payload -> installer-base -> installer)
         env:
           TALOS: ${{ steps.p.outputs.talos }}
           PKGS: ${{ steps.p.outputs.pkgs }}
@@ -142,18 +142,33 @@ jobs:
         run: |
           set -euo pipefail
 
-          # (1) Mirror the stock siderolabs imager under our name+tag so that
-          #     `make installer`'s `docker pull ghcr.io/blockcast/imager:<tag>`
-          #     resolves. The imager carries no kernel -- it's the stock,
-          #     version-matched compose tool, so a re-tag is faithful.
-          docker pull "ghcr.io/siderolabs/imager:${TALOS}"
-          docker tag  "ghcr.io/siderolabs/imager:${TALOS}" "ghcr.io/blockcast/imager:${IMAGE_TAG}"
-          docker push "ghcr.io/blockcast/imager:${IMAGE_TAG}"
+          # (1) Build + push our CUSTOM imager. CRITICAL: the IMAGER -- not
+          #     installer-base -- carries the install payload. Per the Talos
+          #     Dockerfile, `installer-base` is ONLY the installer binary + tools
+          #     ("does not contain boot assets or talos itself"); the `imager-image`
+          #     stage does `COPY --from=install-artifacts /` = the kernel
+          #     (FROM ${PKG_KERNEL}) + the initramfs/rootfs, and that rootfs gets
+          #     its modules from the `modules-amd64` allowlist stage (line 745).
+          #     So mirroring the STOCK siderolabs imager shipped the STOCK rootfs
+          #     (stock modules, NO amt) and the node got "module not found" even
+          #     with the allowlist fix + PKG_KERNEL on installer-base (run
+          #     27717450812 installed a stock payload). Build the imager from our
+          #     allowlist-patched checkout with PKG_KERNEL=<signed kernel> so its
+          #     install-artifacts = our signed kernel + a rootfs that INCLUDES
+          #     amt.ko. `make installer` (stage 3) then pulls THIS imager.
+          make imager \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            PKG_KERNEL="${PKG_KERNEL}" \
+            PKGS="${PKGS}" \
+            TAG="${IMAGE_TAG}"
 
-          # (2) Build + push the custom installer-base: stock v1.13.2 rootfs +
-          #     our signed AMT kernel, injected via the PKG_KERNEL build-arg
-          #     seam (COMMON_ARGS += --build-arg=PKG_KERNEL). buildx pulls the
-          #     private kernel pkg using the daemon creds from the login step.
+          # (2) Build + push the installer-base (installer binary + tools). Built
+          #     custom for version consistency; PKG_KERNEL does not affect its
+          #     payload (it has none) but is harmless. buildx pulls the private
+          #     kernel pkg using the daemon creds from the login step.
           make installer-base \
             PUSH=true \
             PLATFORM=linux/amd64 \
