@@ -1,0 +1,75 @@
+# Compose the DEPLOYABLE signed Talos installer for the AMT data nodes:
+#   base = ghcr.io/blockcast/installer:v1.13.4-amt   (custom kernel that TRUSTS
+#          the Blockcast module-signing cert, built by build-amt-installer.yml)
+#   ext  = ghcr.io/blockcast/amt-kmod:v1.13.4        (signed amt.ko extension,
+#          built by linux-amt build-amt-kmod-talos.yml)
+#   -> ghcr.io/blockcast/installer:v1.13.4-amt-signed
+#
+# Lightweight: pulls two existing images + runs the stock imager to overlay the
+# extension onto the custom-kernel base. No kernel compile. Runs in CI so
+# GITHUB_TOKEN carries packages:write (a local push from devbox is denied: the
+# devbox gh token only has read:packages).
+#
+# Do NOT confuse with the extension workflow's own talos-installer:<tag>-amt,
+# which composes against the STOCK siderolabs base (stock kernel does NOT trust
+# our cert -> signed amt.ko would EKEYREJECTED). Only THIS image is deployable.
+name: compose-signed-installer
+on:
+  workflow_dispatch:
+    inputs:
+      base_installer:
+        default: 'ghcr.io/blockcast/installer:v1.13.4-amt'
+        type: string
+      extension:
+        default: 'ghcr.io/blockcast/amt-kmod:v1.13.4'
+        type: string
+      out_tag:
+        default: 'ghcr.io/blockcast/installer:v1.13.4-amt-signed'
+        type: string
+      talos_version:
+        default: 'v1.13.4'
+        type: string
+concurrency:
+  group: compose-signed-installer-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compose:
+    runs-on: chromium-build
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Resolve dind
+        run: docker version || { echo "docker daemon not reachable" >&2; exit 1; }
+      - name: Login to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compose + push signed installer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ inputs.base_installer }}
+          EXT: ${{ inputs.extension }}
+          OUT: ${{ inputs.out_tag }}
+          TALOS: ${{ inputs.talos_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p _out && chmod 0777 _out
+          # -e GITHUB_TOKEN lets the imager pull the PRIVATE base + extension.
+          docker run --rm -e GITHUB_TOKEN \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/_out:/out" \
+            "ghcr.io/siderolabs/imager:${TALOS}" installer \
+            --base-installer-image "$BASE" \
+            --system-extension-image "$EXT" \
+            --arch amd64
+          test -f _out/installer-amd64.tar
+          LOADED="$(docker load -i _out/installer-amd64.tar | sed -n -e 's/^Loaded image: //p' -e 's/^Loaded image ID: //p' | head -1)"
+          test -n "$LOADED" || { echo "docker load produced no image" >&2; exit 1; }
+          echo "composed installer loaded as: ${LOADED}"
+          docker tag  "$LOADED" "$OUT"
+          docker push "$OUT"
+          echo "Published deployable signed installer: $OUT"
