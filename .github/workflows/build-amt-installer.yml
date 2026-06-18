@@ -140,6 +140,7 @@ jobs:
           make imager \
             PUSH=true \
             PLATFORM=linux/amd64 \
+            INSTALLER_ARCH=targetarch \
             REGISTRY=ghcr.io \
             USERNAME=blockcast \
             PKG_KERNEL="${PKG_KERNEL}" \
@@ -153,6 +154,7 @@ jobs:
           make installer-base \
             PUSH=true \
             PLATFORM=linux/amd64 \
+            INSTALLER_ARCH=targetarch \
             REGISTRY=ghcr.io \
             USERNAME=blockcast \
             PKG_KERNEL="${PKG_KERNEL}" \
@@ -175,6 +177,7 @@ jobs:
           make installer \
             PUSH=true \
             PLATFORM=linux/amd64 \
+            INSTALLER_ARCH=targetarch \
             REGISTRY=ghcr.io \
             USERNAME=blockcast \
             PKG_KERNEL="${PKG_KERNEL}" \
