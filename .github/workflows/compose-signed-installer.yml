@@ -50,7 +50,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Compose + push signed installer
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-repo pull: the imager fetches the SIGNED amt-kmod extension
+          # (Blockcast/linux-amt, private), which this repo's GITHUB_TOKEN cannot
+          # read (GET .../amt-kmod/manifests: DENIED). Use the org PAT (read:packages
+          # across repos) for the imager's ghcr auth. The docker login step above
+          # keeps GITHUB_TOKEN for `docker push` of the output (a pkgs-owned package).
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           BASE: ${{ inputs.base_installer }}
           EXT: ${{ inputs.extension }}
           OUT: ${{ inputs.out_tag }}
