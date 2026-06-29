@@ -37,8 +37,6 @@ IGNORE_VIOLATIONS = {
     'CONFIG_GCC_PLUGIN_LATENT_ENTROPY', # doesn't seem very relevant, entropy is low quality, and not available in Clang, https://github.com/torvalds/linux/blob/37a93dd5c49b5fda807fd204edf2547c3493319c/scripts/gcc-plugins/Kconfig#L25-L33
     'CONFIG_MODULE_SIG_FORCE', # see https://github.com/siderolabs/talos/issues/11989
     'CONFIG_IOMMU_DEFAULT_DMA_LAZY', # performance impact, we can reconsider later
-    'CONFIG_STATIC_USERMODEHELPER', # not set in deployed Sidero v1.13.4 stock kernel (config rebased on /proc/config.gz for boot parity); enabling is unproven on these Talos VMs
-    'CONFIG_PAGE_TABLE_CHECK_ENFORCED', # ditto — deployed stock kernel runs without it (PAGE_TABLE_CHECK=y is kept); enforced mode unproven here
 }
 
 """
