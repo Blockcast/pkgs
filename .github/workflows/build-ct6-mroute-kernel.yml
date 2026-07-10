@@ -91,12 +91,42 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
+      - name: Install Blockcast module signing key
+        env:
+          BLOCKCAST_MODULE_SIGNING_KEY: ${{ secrets.BLOCKCAST_MODULE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BLOCKCAST_MODULE_SIGNING_KEY:-}" ]; then
+            echo "BLOCKCAST_MODULE_SIGNING_KEY secret is required for CONFIG_MODULE_SIG_KEY=certs/blockcast_signing_key.pem" >&2
+            exit 1
+          fi
+
+          key="kernel/build/certs/blockcast_signing_key.pem"
+          cert="kernel/build/certs/blockcast-modsign.crt"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "${tmp}"' EXIT
+
+          umask 077
+          printf '%s\n' "${BLOCKCAST_MODULE_SIGNING_KEY}" > "${key}"
+          if ! grep -q -- '-----BEGIN CERTIFICATE-----' "${key}"; then
+            printf '\n' >> "${key}"
+            cat "${cert}" >> "${key}"
+          fi
+
+          openssl pkey -in "${key}" -pubout -out "${tmp}/key.pub" >/dev/null
+          openssl x509 -in "${cert}" -pubkey -noout > "${tmp}/cert.pub"
+          cmp -s "${tmp}/key.pub" "${tmp}/cert.pub"
+          echo "Blockcast module signing key installed for kernel build"
+
       - name: Build + push kernel pkg
         env:
           IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
         run: |
           set -euo pipefail
           CACHE=registry.blockcast.net/blockcast/amt-kernel-buildcache
+          # bldr v0.6.0 does not expose a BuildKit secret mount for pkg steps.
+          # Keep cache import, but do not export layers while the private signing
+          # key is present in the kernel-build package context.
           make kernel \
             PUSH=true \
             PLATFORM=linux/amd64 \
@@ -104,7 +134,11 @@ jobs:
             USERNAME=blockcast \
             TAG="${IMAGE_TAG}" \
             IMAGE_TAG="${IMAGE_TAG}" \
-            CI_ARGS="--cache-from=type=registry,ref=${CACHE} --cache-to=type=registry,ref=${CACHE},mode=max"
+            CI_ARGS="--cache-from=type=registry,ref=${CACHE}"
+
+      - name: Scrub Blockcast module signing key
+        if: always()
+        run: rm -f kernel/build/certs/blockcast_signing_key.pem
 
       - name: Report published image
         env:
