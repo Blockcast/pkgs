@@ -1,0 +1,113 @@
+name: build-ct6-mroute-kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Kernel image tag to publish'
+        required: false
+        default: 'v1.13.4-amt-ct6-mroute'
+        type: string
+      kver:
+        description: 'Vanilla kernel.org base version'
+        required: false
+        default: '6.18.34'
+        type: string
+  push:
+    branches:
+      - blockcast-ct6-ipv6-pimsm
+    paths:
+      - 'kernel/build/config-amd64'
+      - 'kernel/build/certs/**'
+      - 'kernel/build/patches/**'
+      - 'kernel/build/pkg.yaml'
+      - 'kernel/prepare/pkg.yaml'
+      - '.github/workflows/build-ct6-mroute-kernel.yml'
+
+concurrency:
+  group: build-ct6-mroute-kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: chromium-build
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout pkgs branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve build params
+        id: p
+        env:
+          IN_TAG: ${{ inputs.image_tag }}
+          IN_KVER: ${{ inputs.kver }}
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${IN_TAG:-v1.13.4-amt-ct6-mroute}"
+          KVER="${IN_KVER:-6.18.34}"
+          case "$IMAGE_TAG" in v[0-9]*.[0-9]*.[0-9]*-*) : ;; *) echo "bad image_tag: $IMAGE_TAG" >&2; exit 1 ;; esac
+          case "$KVER" in [0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad kver: $KVER" >&2; exit 1 ;; esac
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+
+      - name: Assert GTM multicast kernel config
+        env:
+          KVER: ${{ steps.p.outputs.kver }}
+        run: |
+          set -euo pipefail
+          grep -q "Linux/x86 ${KVER} Kernel Configuration" kernel/build/config-amd64
+          grep -q '^CONFIG_MPLS_ROUTING=y$' kernel/build/config-amd64
+          grep -q '^CONFIG_IPV6_PIMSM_V2=y$' kernel/build/config-amd64
+          grep -q '^CONFIG_IP_MROUTE_MULTIPLE_TABLES=y$' kernel/build/config-amd64
+          grep -q '^CONFIG_IPV6_MROUTE_MULTIPLE_TABLES=y$' kernel/build/config-amd64
+          grep -q '^# CONFIG_NET_IPGRE_BROADCAST is not set$' kernel/build/config-amd64
+          echo "ct6 mroute config confirmed for ${KVER}"
+
+      - name: Resolve dind socket
+        run: |
+          set -euo pipefail
+          echo "DOCKER_HOST=${DOCKER_HOST:-<unset; default>}"
+          docker version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to registry.blockcast.net cache
+        uses: docker/login-action@v3
+        with:
+          registry: registry.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build + push kernel pkg
+        env:
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          CACHE=registry.blockcast.net/blockcast/amt-kernel-buildcache
+          make kernel \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            TAG="${IMAGE_TAG}" \
+            IMAGE_TAG="${IMAGE_TAG}" \
+            CI_ARGS="--cache-from=type=registry,ref=${CACHE} --cache-to=type=registry,ref=${CACHE},mode=max"
+
+      - name: Report published image
+        env:
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+        run: |
+          echo "Published: ghcr.io/blockcast/kernel:${IMAGE_TAG}"
