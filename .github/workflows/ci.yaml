@@ -25,8 +25,7 @@ jobs:
       issues: read
       packages: write
       pull-requests: read
-    runs-on:
-      group: pkgs
+    runs-on: pkgs
     if: (!startsWith(github.head_ref, 'renovate/') && !startsWith(github.head_ref, 'dependabot/'))
     outputs:
       labels: ${{ steps.retrieve-pr-labels.outputs.result }}
@@ -127,8 +126,7 @@ jobs:
           body_path: _out/RELEASE_NOTES.md
           draft: "true"
   reproducibility:
-    runs-on:
-      group: pkgs
+    runs-on: pkgs
     if: contains(fromJSON(needs.default.outputs.labels || '[]'), 'integration/reproducibility')
     needs:
       - default
