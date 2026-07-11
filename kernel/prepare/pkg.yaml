@@ -6,6 +6,8 @@ dependencies:
   - image: "{{ .LLVM_IMAGE }}:{{ .TOOLS_REV }}"
 steps:
   - sources:
+      # The 6.18.34 cdn.kernel.org release tarball is no longer available.
+      # Snapshot content is accepted only when both hashes match the reviewed pin.
       - url: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/snapshot/linux-{{ .linux_version }}.tar.gz
         destination: linux.tar.gz
         sha256: "{{ .linux_sha256 }}"
