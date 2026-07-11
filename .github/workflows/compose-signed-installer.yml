@@ -32,9 +32,6 @@ on:
       out_tag:
         default: 'ghcr.io/blockcast/installer:v1.13.4-amt-signed'
         type: string
-      talos_version:
-        default: 'v1.13.4'
-        type: string
 concurrency:
   group: compose-signed-installer-${{ github.ref }}
   cancel-in-progress: false
@@ -67,7 +64,6 @@ jobs:
           IMAGER: ${{ inputs.imager_image }}
           EXT: ${{ inputs.extension }}
           OUT: ${{ inputs.out_tag }}
-          TALOS: ${{ inputs.talos_version }}
           TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM }}
           TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM }}
           TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM }}
@@ -123,9 +119,25 @@ jobs:
           printf '%s\n' "$TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM" > "$secureboot_dir/uki-signing-cert.pem"
           printf '%s\n' "$TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM" > "$secureboot_dir/pcr-signing-key.pem"
 
-          openssl pkey -in "$secureboot_dir/uki-signing-key.pem" -noout
+          # Talos v1.13 parses these as PKCS#1 RSA keys. Normalize accepted PEM
+          # inputs so PKCS#8 secrets fail here only if they are not RSA, rather
+          # than later with an opaque imager parsing error.
+          for key in uki-signing-key.pem pcr-signing-key.pem; do
+            openssl rsa \
+              -in "$secureboot_dir/$key" \
+              -traditional \
+              -out "$secureboot_dir/$key.pkcs1"
+            mv "$secureboot_dir/$key.pkcs1" "$secureboot_dir/$key"
+          done
+
+          openssl pkey -in "$secureboot_dir/uki-signing-key.pem" -pubout \
+            -out "$secureboot_dir/uki-signing-key.pub"
           openssl x509 -in "$secureboot_dir/uki-signing-cert.pem" -noout -subject -sha256 -fingerprint
-          openssl pkey -in "$secureboot_dir/pcr-signing-key.pem" -noout
+          openssl x509 -in "$secureboot_dir/uki-signing-cert.pem" -pubkey -noout \
+            > "$secureboot_dir/uki-signing-cert.pub"
+          cmp -s "$secureboot_dir/uki-signing-key.pub" "$secureboot_dir/uki-signing-cert.pub"
+          rm -f "$secureboot_dir/uki-signing-key.pub" "$secureboot_dir/uki-signing-cert.pub"
+          openssl rsa -in "$secureboot_dir/pcr-signing-key.pem" -check -noout
 
           # DOCKER_CONFIG is required because the imager uses go-containerregistry
           # internally; the runner's docker login credStore is not visible there.
