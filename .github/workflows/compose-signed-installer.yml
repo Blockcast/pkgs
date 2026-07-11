@@ -1,24 +1,30 @@
-# Compose the DEPLOYABLE signed Talos installer for the AMT data nodes:
-#   base = ghcr.io/blockcast/installer:v1.13.4-amt   (custom kernel that TRUSTS
-#          the Blockcast module-signing cert, built by build-amt-installer.yml)
-#   ext  = ghcr.io/blockcast/amt-kmod:v1.13.4        (signed amt.ko extension,
-#          built by linux-amt build-amt-kmod-talos.yml)
-#   -> ghcr.io/blockcast/installer:v1.13.4-amt-signed
+# Compose the DEPLOYABLE SecureBoot-signed Talos installer for the AMT data nodes:
+#   imager = ghcr.io/blockcast/imager:<tag>           (custom kernel/payload)
+#   base   = ghcr.io/blockcast/installer:<tag>        (custom installer base)
+#   ext    = ghcr.io/blockcast/amt-kmod:v1.13.4       (signed amt.ko extension,
+#            built by linux-amt build-amt-kmod-talos.yml)
+#   -> ghcr.io/blockcast/installer:<tag>-signed
 #
-# Lightweight: pulls two existing images + runs the stock imager to overlay the
-# extension onto the custom-kernel base. No kernel compile. Runs in CI so
+# Lightweight: pulls existing images + runs the matching custom imager to
+# SecureBoot-sign the UKI while overlaying the extension onto the custom-kernel
+# base. No kernel compile. Runs in CI so
 # GITHUB_TOKEN carries packages:write (a local push from devbox is denied: the
 # devbox gh token only has read:packages).
 #
-# Do NOT confuse with the extension workflow's own talos-installer:<tag>-amt,
-# which composes against the STOCK siderolabs base (stock kernel does NOT trust
-# our cert -> signed amt.ko would EKEYREJECTED). Only THIS image is deployable.
+# Do NOT use the stock Sidero imager here. The imager supplies the UKI payload,
+# so this workflow must use the matching Blockcast imager and the SecureBoot
+# profile; otherwise the output can be tagged "signed" while still containing an
+# unsigned or stock-kernel UKI.
 name: compose-signed-installer
 on:
   workflow_dispatch:
     inputs:
       base_installer:
         default: 'ghcr.io/blockcast/installer:v1.13.4-amt'
+        type: string
+      imager_image:
+        description: 'Custom imager image; empty derives ghcr.io/blockcast/imager:<base tag>'
+        default: ''
         type: string
       extension:
         default: 'ghcr.io/blockcast/amt-kmod:v1.13.4'
@@ -58,9 +64,13 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           GHCR_PULL_TOKEN: ${{ secrets.GH_PAT }}
           BASE: ${{ inputs.base_installer }}
+          IMAGER: ${{ inputs.imager_image }}
           EXT: ${{ inputs.extension }}
           OUT: ${{ inputs.out_tag }}
           TALOS: ${{ inputs.talos_version }}
+          TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM }}
+          TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM }}
+          TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM }}
         run: |
           set -euo pipefail
           mkdir -p _out && chmod 0777 _out
@@ -69,31 +79,78 @@ jobs:
             echo "GH_PAT secret with read:packages access to ghcr.io/blockcast/amt-kmod is required" >&2
             exit 1
           fi
+          missing=0
+          for name in \
+            TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM \
+            TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM \
+            TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "${name} secret is required for Talos secureboot-installer" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          if [ -z "${IMAGER:-}" ]; then
+            case "$BASE" in
+              ghcr.io/blockcast/installer:*)
+                IMAGER="ghcr.io/blockcast/imager:${BASE#ghcr.io/blockcast/installer:}"
+                ;;
+              *)
+                echo "imager_image input is required when base_installer is not ghcr.io/blockcast/installer:<tag>" >&2
+                exit 1
+                ;;
+            esac
+          fi
 
           sock="${DOCKER_HOST#unix://}"
           sock="${sock:-/var/run/docker.sock}"
           test -S "$sock" || { echo "docker socket not found at '$sock' (DOCKER_HOST=${DOCKER_HOST:-})" >&2; exit 1; }
 
           imager_cfg="$RUNNER_TEMP/imager-docker"
+          secureboot_dir="$(mktemp -d /dev/shm/talos-secureboot.XXXXXX 2>/dev/null || mktemp -d)"
+          trap 'rm -rf "$imager_cfg" "$secureboot_dir"' EXIT
+
           mkdir -p "$imager_cfg"
           printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
             "$(printf '%s:%s' "$GHCR_USER" "$GHCR_PULL_TOKEN" | base64 -w0)" > "$imager_cfg/config.json"
 
+          umask 077
+          printf '%s\n' "$TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM" > "$secureboot_dir/uki-signing-key.pem"
+          printf '%s\n' "$TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM" > "$secureboot_dir/uki-signing-cert.pem"
+          printf '%s\n' "$TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM" > "$secureboot_dir/pcr-signing-key.pem"
+
+          openssl pkey -in "$secureboot_dir/uki-signing-key.pem" -noout
+          openssl x509 -in "$secureboot_dir/uki-signing-cert.pem" -noout -subject -sha256 -fingerprint
+          openssl pkey -in "$secureboot_dir/pcr-signing-key.pem" -noout
+
           # DOCKER_CONFIG is required because the imager uses go-containerregistry
           # internally; the runner's docker login credStore is not visible there.
+          compose_log="$RUNNER_TEMP/secureboot-imager.log"
           docker run --rm \
             -e DOCKER_CONFIG=/root/.docker \
             -v "$sock:/var/run/docker.sock" \
             -v "$imager_cfg/config.json:/root/.docker/config.json:ro" \
+            -v "$secureboot_dir:/secureboot:ro" \
             -v "$PWD/_out:/out" \
-            "ghcr.io/siderolabs/imager:${TALOS}" installer \
+            "$IMAGER" secureboot-installer \
             --base-installer-image "$BASE" \
             --system-extension-image "$EXT" \
-            --arch amd64
-          test -f _out/installer-amd64.tar
-          LOADED="$(docker load -i _out/installer-amd64.tar | sed -n -e 's/^Loaded image: //p' -e 's/^Loaded image ID: //p' | head -1)"
+            --arch amd64 2>&1 | tee "$compose_log"
+          if grep -Eq 'secureboot: false|unsigned\.uki' "$compose_log"; then
+            echo "imager log indicates an unsigned/non-SecureBoot UKI path; refusing to publish" >&2
+            exit 1
+          fi
+          grep -q 'secureboot: true' "$compose_log"
+          grep -q 'signing systemd-boot' "$compose_log"
+
+          test -f _out/installer-amd64-secureboot.tar
+          LOADED="$(docker load -i _out/installer-amd64-secureboot.tar | sed -n -e 's/^Loaded image: //p' -e 's/^Loaded image ID: //p' | head -1)"
           test -n "$LOADED" || { echo "docker load produced no image" >&2; exit 1; }
-          echo "composed installer loaded as: ${LOADED}"
+          echo "composed SecureBoot installer loaded as: ${LOADED}"
           docker tag  "$LOADED" "$OUT"
           docker push "$OUT"
-          echo "Published deployable signed installer: $OUT"
+          echo "Published deployable SecureBoot signed installer: $OUT"
