@@ -47,6 +47,11 @@ on:
         required: false
         default: 'ghcr.io/blockcast/kernel:v1.13.4-amt'
         type: string
+      installer_tag:
+        description: 'Installer image tag to publish'
+        required: false
+        default: 'v1.13.4-amt'
+        type: string
 
 concurrency:
   group: build-amt-installer-${{ github.ref }}
@@ -66,16 +71,19 @@ jobs:
           IN_TALOS: ${{ inputs.talos_version }}
           IN_PKGS: ${{ inputs.pkgs_sha }}
           IN_KIMG: ${{ inputs.kernel_image }}
+          IN_INSTALLER_TAG: ${{ inputs.installer_tag }}
         run: |
           set -euo pipefail
           TALOS="${IN_TALOS:-v1.13.4}"
           PKGS="${IN_PKGS:-v1.13.0-28-g54ec9fc}"
           KIMG="${IN_KIMG:-ghcr.io/blockcast/kernel:v1.13.4-amt}"
+          INSTALLER_TAG="${IN_INSTALLER_TAG:-${TALOS}-amt}"
           case "$TALOS" in v[0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad talos: $TALOS" >&2; exit 1 ;; esac
+          case "$INSTALLER_TAG" in v[0-9]*.[0-9]*.[0-9]*-*) : ;; *) echo "bad installer_tag: $INSTALLER_TAG" >&2; exit 1 ;; esac
           echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
           echo "pkgs=$PKGS"   >> "$GITHUB_OUTPUT"
           echo "kimg=$KIMG"   >> "$GITHUB_OUTPUT"
-          echo "image_tag=${TALOS}-amt" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$INSTALLER_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout siderolabs/talos @ tag
         uses: actions/checkout@v4

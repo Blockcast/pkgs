@@ -11,8 +11,7 @@ concurrency:
 name: weekly
 jobs:
   reproducibility:
-    runs-on:
-      group: pkgs
+    runs-on: pkgs
     steps:
       - name: gather-system-info
         id: system-info

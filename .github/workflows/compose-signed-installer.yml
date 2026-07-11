@@ -50,7 +50,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Compose + push signed installer
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-repo pull: the imager fetches the SIGNED amt-kmod extension
+          # (Blockcast/linux-amt, private), which this repo's GITHUB_TOKEN cannot
+          # read (GET .../amt-kmod/manifests: DENIED). Use the org PAT (read:packages
+          # across repos) for the imager's ghcr auth. The docker login step above
+          # keeps GITHUB_TOKEN for `docker push` of the output (a pkgs-owned package).
+          GHCR_USER: ${{ github.actor }}
+          GHCR_PULL_TOKEN: ${{ secrets.GH_PAT }}
           BASE: ${{ inputs.base_installer }}
           EXT: ${{ inputs.extension }}
           OUT: ${{ inputs.out_tag }}
@@ -58,9 +64,27 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p _out && chmod 0777 _out
-          # -e GITHUB_TOKEN lets the imager pull the PRIVATE base + extension.
-          docker run --rm -e GITHUB_TOKEN \
-            -v /var/run/docker.sock:/var/run/docker.sock \
+
+          if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
+            echo "GH_PAT secret with read:packages access to ghcr.io/blockcast/amt-kmod is required" >&2
+            exit 1
+          fi
+
+          sock="${DOCKER_HOST#unix://}"
+          sock="${sock:-/var/run/docker.sock}"
+          test -S "$sock" || { echo "docker socket not found at '$sock' (DOCKER_HOST=${DOCKER_HOST:-})" >&2; exit 1; }
+
+          imager_cfg="$RUNNER_TEMP/imager-docker"
+          mkdir -p "$imager_cfg"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
+            "$(printf '%s:%s' "$GHCR_USER" "$GHCR_PULL_TOKEN" | base64 -w0)" > "$imager_cfg/config.json"
+
+          # DOCKER_CONFIG is required because the imager uses go-containerregistry
+          # internally; the runner's docker login credStore is not visible there.
+          docker run --rm \
+            -e DOCKER_CONFIG=/root/.docker \
+            -v "$sock:/var/run/docker.sock" \
+            -v "$imager_cfg/config.json:/root/.docker/config.json:ro" \
             -v "$PWD/_out:/out" \
             "ghcr.io/siderolabs/imager:${TALOS}" installer \
             --base-installer-image "$BASE" \
