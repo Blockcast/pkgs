@@ -42,6 +42,7 @@ steps:
         export SCCACHE_ENDPOINT="{{ .BUILD_ARG_SCCACHE_ENDPOINT }}"
         export SCCACHE_S3_USE_SSL="{{ .BUILD_ARG_SCCACHE_S3_USE_SSL }}"
         export SCCACHE_S3_KEY_PREFIX="amt-kernel/{{ .linux_version }}"
+        export SCCACHE_REGION=us-east-1
         export SCCACHE_IDLE_TIMEOUT=0
         # S3 credentials come from a context file the CI writes (NOT a build-arg,
         # which would leak into image metadata). Absent -> cache miss, build ok.
