@@ -6,12 +6,12 @@ on:
       image_tag:
         description: 'Kernel image tag to publish'
         required: false
-        default: 'v1.13.4-amt-ct6-mroute'
+        default: 'v1.13.6-amt-ct6-mroute'
         type: string
       kver:
         description: 'Vanilla kernel.org base version'
         required: false
-        default: '6.18.34'
+        default: '6.18.38'
         type: string
   push:
     branches:
