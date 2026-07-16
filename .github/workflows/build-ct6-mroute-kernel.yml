@@ -48,8 +48,8 @@ jobs:
           IN_KVER: ${{ inputs.kver }}
         run: |
           set -euo pipefail
-          IMAGE_TAG="${IN_TAG:-v1.13.4-amt-ct6-mroute}"
-          KVER="${IN_KVER:-6.18.34}"
+          IMAGE_TAG="${IN_TAG:-v1.13.6-amt-ct6-mroute}"
+          KVER="${IN_KVER:-6.18.38}"
           case "$IMAGE_TAG" in v[0-9]*.[0-9]*.[0-9]*-*) : ;; *) echo "bad image_tag: $IMAGE_TAG" >&2; exit 1 ;; esac
           case "$KVER" in [0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad kver: $KVER" >&2; exit 1 ;; esac
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
