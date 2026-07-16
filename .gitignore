@@ -4,3 +4,6 @@
 
 _out
 kernel/build/certs/blockcast_signing_key.pem
+
+# CI-written sccache S3 creds (never commit)
+kernel/build/certs/sccache.env

@@ -14,6 +14,10 @@ steps:
         destination: kspp.tar.gz
         sha256: "{{ .kspp_sha256 }}"
         sha512: "{{ .kspp_sha512 }}"
+      - url: https://github.com/mozilla/sccache/releases/download/{{ .sccache_version }}/sccache-{{ .sccache_version }}-x86_64-unknown-linux-musl.tar.gz
+        destination: sccache.tar.gz
+        sha256: "{{ .sccache_sha256 }}"
+        sha512: "{{ .sccache_sha512 }}"
     env:
       ARCH: {{ if eq .ARCH "aarch64"}}arm64{{ else if eq .ARCH "x86_64" }}x86_64{{ else }}unsupported{{ end }}
     prepare:
@@ -26,6 +30,12 @@ steps:
       - |
         mkdir -p /toolchain/kernel-hardening-checker
         tar -xzf kspp.tar.gz --strip-components=1 -C /toolchain/kernel-hardening-checker
+      - |
+        # Install sccache (amd64 binary) into the toolchain. Harmless if unused;
+        # kernel-build only invokes it when --build-arg=SCCACHE_S3_BUCKET is set.
+        mkdir -p /toolchain/bin
+        tar -xzf sccache.tar.gz -C /tmp
+        install -m0755 /tmp/sccache-{{ .sccache_version }}-x86_64-unknown-linux-musl/sccache /toolchain/bin/sccache
 finalize:
   - from: /
     to: /

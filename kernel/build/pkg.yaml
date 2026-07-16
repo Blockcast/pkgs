@@ -32,8 +32,28 @@ steps:
       - |
         cd /src
 
+        {{ if .BUILD_ARG_SCCACHE_S3_BUCKET }}
+        # Optional sccache object cache (S3 backend). Transparent + fail-safe:
+        # sccache produces bit-identical output to the underlying clang and, on
+        # any backend error, falls back to a direct compile -- an unreachable or
+        # misconfigured cache never fails the build. Active only with this arg.
+        export PATH="/toolchain/bin:${PATH}"
+        export SCCACHE_BUCKET="{{ .BUILD_ARG_SCCACHE_S3_BUCKET }}"
+        export SCCACHE_ENDPOINT="{{ .BUILD_ARG_SCCACHE_ENDPOINT }}"
+        export SCCACHE_S3_USE_SSL="{{ .BUILD_ARG_SCCACHE_S3_USE_SSL }}"
+        export SCCACHE_S3_KEY_PREFIX="amt-kernel/{{ .linux_version }}"
+        export SCCACHE_IDLE_TIMEOUT=0
+        # S3 credentials come from a context file the CI writes (NOT a build-arg,
+        # which would leak into image metadata). Absent -> cache miss, build ok.
+        [ -f /pkg/certs/sccache.env ] && . /pkg/certs/sccache.env
+        sccache --start-server || true
+        make -j $(nproc) CC="sccache clang" HOSTCC="sccache clang"
+        make -j $(nproc) CC="sccache clang" HOSTCC="sccache clang" modules
+        sccache --show-stats || true
+        {{ else }}
         make -j $(nproc)
         make -j $(nproc) modules
+        {{ end }}
 
         if [[ "${ARCH}" == "arm64" ]]; then
           echo "Compiling device-tree blobs"
