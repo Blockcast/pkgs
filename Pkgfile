@@ -102,6 +102,13 @@ vars:
   kspp_sha256: 6fa575bd4049fb2a393008d267815fec8bc27162f09147534974b0197231db04
   kspp_sha512: 1befd930ca0e43acb049f3ffac584e9a13c0ef716abba0670eb976e1b6bcee3f833b2b16cb02ac193c33c3fbbeb6ff221394f4265f5b0d4b8e65488a530b0d0a
 
+  # sccache: optional compiler object-cache for the kernel build (installed
+  # always, only used when kernel-build gets --build-arg=SCCACHE_S3_BUCKET=...).
+  # renovate: datasource=github-releases depName=mozilla/sccache
+  sccache_version: v0.16.0
+  sccache_sha256: aec995a83ad3dff3d14b6314e08858b7b73d35ca85a5bcf3d3a9ec07dee35588
+  sccache_sha512: 04d02fc2be5378da39c3f56a0e60184fc6ad4c257ad659fc02b33ea8c633af20b9ce0c4c22b1b81ac035d1e1cb921bca084a8d4015714a043e189db51cbc59cc
+
   # renovate: datasource=git-tags extractVersion=^v(?<version>.*)$ depName=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
   linux_version: 6.18.38
   linux_sha256: 8d6507a7299df162362517016f0939aa9f340d4c3672bcde3905449093405fd0

@@ -118,15 +118,49 @@ jobs:
           cmp -s "${tmp}/key.pub" "${tmp}/cert.pub"
           echo "Blockcast module signing key installed for kernel build"
 
+      - name: Configure sccache (optional — no-op unless SCCACHE_S3_* secrets set)
+        id: sccache
+        env:
+          BUCKET: ${{ secrets.SCCACHE_S3_BUCKET }}
+          ENDPOINT: ${{ secrets.SCCACHE_S3_ENDPOINT }}
+          ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+          USE_SSL: ${{ vars.SCCACHE_S3_USE_SSL || 'true' }}
+        run: |
+          set -euo pipefail
+          # Fail-safe: with no backend secret, emit empty args and build exactly
+          # as before (no object cache). Only wires sccache when creds exist.
+          if [ -z "${BUCKET:-}" ] || [ -z "${ACCESS_KEY_ID:-}" ]; then
+            echo "sccache_args=" >> "$GITHUB_OUTPUT"
+            echo "sccache backend not configured — building without object cache"
+            exit 0
+          fi
+          umask 077
+          # Secret S3 keys go in a context file (scrubbed post-build), never a
+          # build-arg (which would persist in image metadata). %q quotes safely.
+          {
+            printf 'export AWS_ACCESS_KEY_ID=%q\n' "$ACCESS_KEY_ID"
+            printf 'export AWS_SECRET_ACCESS_KEY=%q\n' "$SECRET_ACCESS_KEY"
+          } > kernel/build/certs/sccache.env
+          # Non-secret config travels as build-args.
+          printf 'sccache_args=--build-arg=SCCACHE_S3_BUCKET=%s --build-arg=SCCACHE_ENDPOINT=%s --build-arg=SCCACHE_S3_USE_SSL=%s\n' \
+            "$BUCKET" "$ENDPOINT" "$USE_SSL" >> "$GITHUB_OUTPUT"
+          echo "sccache backend configured (bucket=$BUCKET)"
+
       - name: Build + push kernel pkg
         env:
           IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+          SCCACHE_ARGS: ${{ steps.sccache.outputs.sccache_args }}
         run: |
           set -euo pipefail
           CACHE=registry.blockcast.net/blockcast/amt-kernel-buildcache
           # bldr v0.6.0 does not expose a BuildKit secret mount for pkg steps.
           # Keep cache import, but do not export layers while the private signing
           # key is present in the kernel-build package context.
+          #
+          # SCCACHE_ARGS is empty unless the sccache backend is configured (see
+          # the step above); when set it appends --build-arg=SCCACHE_S3_* which
+          # flips kernel-build to CC="sccache clang" (object-level cache).
           make kernel \
             PUSH=true \
             PLATFORM=linux/amd64 \
@@ -134,11 +168,11 @@ jobs:
             USERNAME=blockcast \
             TAG="${IMAGE_TAG}" \
             IMAGE_TAG="${IMAGE_TAG}" \
-            CI_ARGS="--cache-from=type=registry,ref=${CACHE}"
+            CI_ARGS="--cache-from=type=registry,ref=${CACHE} ${SCCACHE_ARGS}"
 
-      - name: Scrub Blockcast module signing key
+      - name: Scrub secrets from build context
         if: always()
-        run: rm -f kernel/build/certs/blockcast_signing_key.pem
+        run: rm -f kernel/build/certs/blockcast_signing_key.pem kernel/build/certs/sccache.env
 
       - name: Report published image
         env:
