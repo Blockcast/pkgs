@@ -1,0 +1,176 @@
+# Build the version-matched custom imager, installer-base, and installer.
+# The imager supplies the kernel and initramfs; PKG_KERNEL must point to the
+# Blockcast-signed kernel package from build-ct6-mroute-kernel.yml.
+
+name: build-amt-installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      talos_version:
+        description: 'siderolabs/talos tag to check out (e.g. v1.14.0)'
+        required: false
+        default: 'v1.14.0'
+        type: string
+      pkgs_sha:
+        description: 'PKGS pin Talos uses (e.g. v1.14.0-15-g2f03590)'
+        required: false
+        default: 'v1.14.0-15-g2f03590'
+        type: string
+      kernel_image:
+        description: 'Custom kernel image ref from build-amt-kernel-pkg'
+        required: false
+        default: 'ghcr.io/blockcast/kernel:v1.14.0-amt-ct6-mroute'
+        type: string
+      installer_tag:
+        description: 'Installer image tag to publish'
+        required: false
+        default: 'v1.14.0-amt-ct6-mroute'
+        type: string
+
+concurrency:
+  group: build-amt-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    runs-on: chromium-build
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Resolve build params
+        id: p
+        env:
+          IN_TALOS: ${{ inputs.talos_version }}
+          IN_PKGS: ${{ inputs.pkgs_sha }}
+          IN_KIMG: ${{ inputs.kernel_image }}
+          IN_INSTALLER_TAG: ${{ inputs.installer_tag }}
+        run: |
+          set -euo pipefail
+          TALOS="${IN_TALOS:-v1.14.0}"
+          PKGS="${IN_PKGS:-v1.14.0-15-g2f03590}"
+          KIMG="${IN_KIMG:-ghcr.io/blockcast/kernel:v1.14.0-amt-ct6-mroute}"
+          INSTALLER_TAG="${IN_INSTALLER_TAG:-${TALOS}-amt}"
+          case "$TALOS" in v[0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad talos: $TALOS" >&2; exit 1 ;; esac
+          case "$INSTALLER_TAG" in v[0-9]*.[0-9]*.[0-9]*-*) : ;; *) echo "bad installer_tag: $INSTALLER_TAG" >&2; exit 1 ;; esac
+          echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
+          echo "pkgs=$PKGS"   >> "$GITHUB_OUTPUT"
+          echo "kimg=$KIMG"   >> "$GITHUB_OUTPUT"
+          echo "image_tag=$INSTALLER_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout siderolabs/talos @ tag
+        uses: actions/checkout@v4
+        with:
+          repository: siderolabs/talos
+          ref: ${{ steps.p.outputs.talos }}
+          fetch-depth: 0
+
+      - name: Resolve dind socket
+        run: |
+          set -euo pipefail
+          echo "DOCKER_HOST=${DOCKER_HOST:-<unset; default>}"
+          docker version || { echo "docker daemon not reachable -- check dind / DOCKER_HOST" >&2; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install crane (required by talos `make installer`; not on the runner)
+        run: |
+          set -euo pipefail
+          # Talos Makefile assumes `crane` on PATH (Makefile lists it as a
+          # required tool, no bootstrap). Install the release binary into a
+          # user-writable dir and prepend to PATH for subsequent steps.
+          CRANE_VER="v0.20.2"
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VER}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xzf - -C "$RUNNER_TEMP/bin" crane
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/crane" version || true
+
+      - name: Login to ghcr (pull private kernel/installer-base + push)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push installer (custom imager carries payload -> installer-base -> installer)
+        env:
+          TALOS: ${{ steps.p.outputs.talos }}
+          PKGS: ${{ steps.p.outputs.pkgs }}
+          PKG_KERNEL: ${{ steps.p.outputs.kimg }}
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # (1) Build + push our CUSTOM imager. CRITICAL: the IMAGER -- not
+          #     installer-base -- carries the install payload. Per the Talos
+          #     Dockerfile, `installer-base` is ONLY the installer binary + tools
+          #     ("does not contain boot assets or talos itself"); the `imager-image`
+          #     stage does `COPY --from=install-artifacts /` = the kernel
+          #     (FROM ${PKG_KERNEL}) + the initramfs/rootfs, and that rootfs gets
+          #     its modules from the `modules-amd64` allowlist stage (line 745).
+          #     So mirroring the STOCK siderolabs imager shipped the STOCK rootfs
+          #     (stock modules, NO amt) and the node got "module not found" even
+          #     with the allowlist fix + PKG_KERNEL on installer-base (run
+          #     27717450812 installed a stock payload). Build the imager from our
+          #     allowlist-patched checkout with PKG_KERNEL=<signed kernel> so its
+          #     install-artifacts = our signed kernel + a rootfs that INCLUDES
+          #     amt.ko. `make installer` (stage 3) then pulls THIS imager.
+          make imager \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            INSTALLER_ARCH=targetarch \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            PKG_KERNEL="${PKG_KERNEL}" \
+            PKGS="${PKGS}" \
+            TAG="${IMAGE_TAG}"
+
+          # (2) Build + push the installer-base (installer binary + tools). Built
+          #     custom for version consistency; PKG_KERNEL does not affect its
+          #     payload (it has none) but is harmless. buildx pulls the private
+          #     kernel pkg using the daemon creds from the login step.
+          make installer-base \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            INSTALLER_ARCH=targetarch \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            PKG_KERNEL="${PKG_KERNEL}" \
+            PKGS="${PKGS}" \
+            TAG="${IMAGE_TAG}"
+
+          # (3) Compose + push the installer. `image-installer` pulls our imager
+          #     and runs it with `-e GITHUB_TOKEN`, which the imager uses to pull
+          #     the PRIVATE installer-base from ghcr; crane then pushes the per-
+          #     arch tar and index-appends the final multi-arch tag:
+          #     ghcr.io/blockcast/installer:${IMAGE_TAG}
+          #
+          # Pre-create the ARTIFACTS dir (_out) owned by the runner uid. The
+          # imager runs `docker run --user $(id -u) -v $PWD/_out:/out ...`; if
+          # _out is absent, the daemon auto-creates the bind-mount source as
+          # ROOT and the imager (non-root) then fails with "permission denied"
+          # writing installer-amd64.tar (observed run 27706173827).
+          mkdir -p _out && chmod 0777 _out
+
+          make installer \
+            PUSH=true \
+            PLATFORM=linux/amd64 \
+            INSTALLER_ARCH=targetarch \
+            REGISTRY=ghcr.io \
+            USERNAME=blockcast \
+            PKG_KERNEL="${PKG_KERNEL}" \
+            PKGS="${PKGS}" \
+            TAG="${IMAGE_TAG}"
+
+      - name: Report published image
+        env:
+          IMAGE_TAG: ${{ steps.p.outputs.image_tag }}
+        run: |
+          echo "Published: ghcr.io/blockcast/installer:${IMAGE_TAG}"
+          echo "Next: Gate-4 canary on k8s-data-2 with install.image=ghcr.io/blockcast/installer:${IMAGE_TAG}"
+
