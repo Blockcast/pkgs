@@ -19,6 +19,17 @@ name: compose-signed-installer
 on:
   workflow_dispatch:
     inputs:
+      output_kind:
+        description: 'Signed installer image or SecureBoot ISO for a new worker'
+        default: secureboot-installer
+        type: choice
+        options:
+          - secureboot-installer
+          - secureboot-iso
+      iso_kernel_arg:
+        description: 'Optional bootstrap kernel argument embedded in the signed ISO only'
+        default: ''
+        type: string
       base_installer:
         default: 'ghcr.io/blockcast/installer:v1.14.0-amt-ct6-mroute'
         type: string
@@ -51,7 +62,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compose + push signed installer
+      - name: Compose signed boot artifact
         env:
           # Cross-repo pull: the imager fetches the SIGNED amt-kmod extension
           # (Blockcast/linux-amt, private), which this repo's GITHUB_TOKEN cannot
@@ -64,12 +75,23 @@ jobs:
           IMAGER: ${{ inputs.imager_image }}
           EXT: ${{ inputs.extension }}
           OUT: ${{ inputs.out_tag }}
+          PROFILE: ${{ inputs.output_kind }}
+          ISO_KERNEL_ARG: ${{ inputs.iso_kernel_arg }}
           TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM }}
           TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM }}
           TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM }}
         run: |
           set -euo pipefail
           mkdir -p _out && chmod 0777 _out
+          case "$PROFILE" in
+            secureboot-installer|secureboot-iso) ;;
+            *) echo "Unsupported signed output profile: $PROFILE" >&2; exit 1 ;;
+          esac
+          extra_args=()
+          if [ -n "$ISO_KERNEL_ARG" ]; then
+            test "$PROFILE" = secureboot-iso
+            extra_args+=(--extra-kernel-arg "$ISO_KERNEL_ARG")
+          fi
 
           if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
             echo "GH_PAT secret with read:packages access to ghcr.io/blockcast/amt-kmod is required" >&2
@@ -148,16 +170,22 @@ jobs:
             -v "$imager_cfg/config.json:/root/.docker/config.json:ro" \
             -v "$secureboot_dir:/secureboot:ro" \
             -v "$PWD/_out:/out" \
-            "$IMAGER" secureboot-installer \
+            "$IMAGER" "$PROFILE" \
             --base-installer-image "$BASE" \
             --system-extension-image "$EXT" \
-            --arch amd64 2>&1 | tee "$compose_log"
+            --arch amd64 "${extra_args[@]}" 2>&1 | tee "$compose_log"
           if grep -Eq 'secureboot: false|unsigned\.uki' "$compose_log"; then
             echo "imager log indicates an unsigned/non-SecureBoot UKI path; refusing to publish" >&2
             exit 1
           fi
           grep -q 'secureboot: true' "$compose_log"
           grep -q 'signing systemd-boot' "$compose_log"
+
+          if [ "$PROFILE" = secureboot-iso ]; then
+            test -s _out/metal-amd64-secureboot.iso
+            (cd _out && sha256sum metal-amd64-secureboot.iso > metal-amd64-secureboot.iso.sha256)
+            exit 0
+          fi
 
           test -f _out/installer-amd64-secureboot.tar
           LOADED="$(docker load -i _out/installer-amd64-secureboot.tar | sed -n -e 's/^Loaded image: //p' -e 's/^Loaded image ID: //p' | head -1)"
@@ -167,3 +195,13 @@ jobs:
           docker push "$OUT"
           echo "Published deployable SecureBoot signed installer: $OUT"
 
+      - name: Upload signed ISO
+        if: inputs.output_kind == 'secureboot-iso'
+        uses: actions/upload-artifact@v4
+        with:
+          name: talos-amd64-secureboot-iso
+          path: |
+            _out/metal-amd64-secureboot.iso
+            _out/metal-amd64-secureboot.iso.sha256
+          if-no-files-found: error
+          retention-days: 7
