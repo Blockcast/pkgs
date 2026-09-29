@@ -13,8 +13,18 @@ steps:
     prepare:
       - |
         tar -xzf flannel-cni.tar.gz --strip-components=1
-        go mod tidy
-        go mod vendor
+        # BLO-37661: this is the only network access in the whole recipe, and a
+        # ~12s proxy.golang.org TLS blip here discarded a completed 5h build-a
+        # in run 36368015537. Go's default GOPROXY is "proxy.golang.org,direct"
+        # and the comma only fails over on 404/410, never on a transport error
+        # (cmd/go/internal/modfetch/proxy.go: fallBackOnError), so the fetch had
+        # exactly one attempt. go mod tidy/vendor are idempotent, so retry.
+        for attempt in 1 2 3; do
+          if go mod tidy && go mod vendor; then break; fi
+          if [ "${attempt}" = 3 ]; then echo "go mod fetch failed after 3 attempts" >&2; exit 1; fi
+          echo "go mod fetch failed (attempt ${attempt}/3); retrying in $((attempt * 15))s" >&2
+          sleep "$((attempt * 15))"
+        done
   - network: none
     build:
       - |

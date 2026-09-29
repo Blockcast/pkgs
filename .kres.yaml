@@ -1,4 +1,12 @@
 ---
+# ⚠ `make rekres` OVERWRITES .github/workflows/weekly.yaml AND WILL DROP TWO
+# HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE. Re-apply both after running it:
+#   1. `runs-on: pkgs-public`   (kres emits `group: pkgs`) — BLO-21948
+#   2. `timeout-minutes: 960`   on the `reproducibility` job — BLO-37661
+# Neither has a spec field: kres builds that job as a Go literal with no
+# TimeoutMinutes and no runner override (siderolabs/kres
+# internal/project/pkgfile/build.go, the weekly Workflow in CompileGitHubWorkflow).
+# The durable fix is a `reproducibilityTimeoutMinutes` knob upstream in kres.
 kind: pkgfile.Build
 spec:
   targets:
