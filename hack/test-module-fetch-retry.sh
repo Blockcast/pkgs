@@ -24,7 +24,9 @@ run_case() { # $1=script $2=fault_count $3=expected_exit
   printf '#!/bin/sh\nexit 0\n' > "$d/tar"
   printf '#!/bin/sh\nexit 0\n' > "$d/sleep"   # keep the check instant
   chmod +x "$d/go" "$d/tar" "$d/sleep"; echo 0 > "$d/n"
-  got=0; ( export PATH="$d:$PATH"; set -e; eval "$1" ) >/dev/null 2>&1 || got=$?
+  # Own process, same flags bldr prepends (`set -eou pipefail`): a `( set -e; ... ) || got=$?`
+  # subshell runs with errexit suppressed, so a failing `go mod tidy` would fall through.
+  got=0; env PATH="$d:$PATH" bash -euo pipefail -c "$1" >/dev/null 2>&1 || got=$?
   n=$(cat "$d/n")
   [ "$n" -gt 0 ] || { echo "  FAIL extracted script never invoked go"; return 1; }
   [ "$got" = "$3" ] || { echo "  FAIL faults=$2 -> exit $got, want $3 (go invoked ${n}x)"; return 1; }
@@ -35,9 +37,9 @@ for f in flannel-cni/pkg.yaml tc-redirect-tap/pkg.yaml; do
   echo "== $f"
   script=$(extract "$f")
   [ -n "$script" ] || { echo "  FAIL extracted nothing from $f"; exit 1; }
-  run_case "$script" 0 0   # clean run
-  run_case "$script" 1 0   # one transient fault -- the run 36368015537 case
-  run_case "$script" 2 0   # third attempt wins
-  run_case "$script" 9 1   # a persistent fault must STILL fail the build
+  run_case "$script" 0 0 || exit 1   # clean run
+  run_case "$script" 1 0 || exit 1   # one transient fault -- the run 36368015537 case
+  run_case "$script" 2 0 || exit 1   # third attempt wins
+  run_case "$script" 9 1 || exit 1   # a persistent fault must STILL fail the build
 done
 echo "ALL PASS"
