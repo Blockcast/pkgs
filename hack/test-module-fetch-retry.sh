@@ -4,8 +4,12 @@
 #
 # flannel-cni/pkg.yaml and tc-redirect-tap/pkg.yaml are otherwise byte-identical
 # to siderolabs/pkgs upstream, so an upstream sync can silently drop the retry.
-# Run this by hand after any sync; it is deliberately not wired into CI because
-# ci.yaml is kres-generated and a hand-added job would not survive `make rekres`.
+# Run this by hand after any sync. Deliberately NOT wired into CI, and not
+# because it couldn't be -- `.kres.yaml` shows a hand-edit can be documented and
+# re-applied. The drift this catches arrives with an upstream sync, not on a
+# schedule, so "after a sync" IS its natural cadence; and a hand-added job that
+# `make rekres` drops fails silently, losing the guard with no signal, whereas a
+# dropped retry block is exactly what this script is here to notice.
 #
 # Verified to have a failing mutation: run it against the upstream (un-retried)
 # blocks and the faults=1 case goes red.
