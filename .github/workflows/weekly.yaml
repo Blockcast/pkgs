@@ -12,6 +12,13 @@ name: weekly
 jobs:
   reproducibility:
     runs-on: pkgs-public
+    # BLO-37661: HAND-EDITED, kres has no knob for this — see .kres.yaml.
+    # Floor is 2 x the measured build-a of run 36368015537 (5h02m53s) = 10h06m;
+    # the remaining ~5h54m covers diffoscope over two ~600MB trees, which no run
+    # has ever reached and which is therefore unmeasured. Without an explicit
+    # value the documented jobs.<id>.timeout-minutes default of 360 applies,
+    # which is below the 10h06m floor. Tighten once a green run is on record.
+    timeout-minutes: 960
     steps:
       - name: gather-system-info
         id: system-info

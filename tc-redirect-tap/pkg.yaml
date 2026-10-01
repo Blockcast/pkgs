@@ -13,7 +13,14 @@ steps:
     prepare:
       - |
         tar -xzf tc-redirect-tap.tar.gz --strip-components=1
-        go mod download
+        # BLO-37661: same single-attempt module fetch as flannel-cni; see the
+        # comment there for why Go's default GOPROXY does not fail over.
+        for attempt in 1 2 3; do
+          if go mod download; then break; fi
+          if [ "${attempt}" = 3 ]; then echo "go mod fetch failed after 3 attempts" >&2; exit 1; fi
+          echo "go mod fetch failed (attempt ${attempt}/3); retrying in $((attempt * 15))s" >&2
+          sleep "$((attempt * 15))"
+        done
   - network: none
     build:
       - |
