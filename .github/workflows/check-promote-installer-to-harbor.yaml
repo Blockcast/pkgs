@@ -7,8 +7,15 @@
 # worst possible moment to find a regression in the check that decides whether
 # to repoint a tag the fleet may be pinned to.
 #
-# Pure bash against a stubbed `crane` -- no registry, no credential, no network
-# -- so it runs on any PR in seconds.
+# Pure bash against a stubbed `crane` -- no registry, no credential, no network.
+#
+# INERT as of 2026-10-02: no runner can pick this job up, so every run queues
+# and it gates nothing. This repo is public; runner group `pkgs` has
+# allows_public_repositories=false, and `pkgs-public` is restricted to
+# weekly.yaml@refs/heads/main. It becomes live only once an org admin allows
+# public repositories on `pkgs`, or adds this workflow to `pkgs-public`'s
+# selected workflows. Until then, run both scripts below locally before
+# changing the promotion script.
 name: check-promote-installer-to-harbor
 
 on:
