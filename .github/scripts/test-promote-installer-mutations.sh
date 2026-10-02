@@ -84,4 +84,17 @@ open(path, "w").write(s.replace(old, 'if false; then', 1))
 PY
 assert_caught "post-copy digest equality assertion removed"
 
+# 4. The anonymous-pull proof's empty DOCKER_CONFIG -- drop it, so the "secret-
+#    free" resolve inherits the job's Harbor credential and proves nothing about
+#    the credential-less path the nodes actually pull through.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = 'anon_digest=$(DOCKER_CONFIG="$anonymous_config" crane digest'
+assert old in s, "anonymous DOCKER_CONFIG override not found -- update this mutation"
+open(path, "w").write(s.replace(old, 'anon_digest=$(crane digest', 1))
+PY
+assert_caught "anonymous-pull DOCKER_CONFIG override removed"
+
 echo "all mutations caught"

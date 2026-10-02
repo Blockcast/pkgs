@@ -233,6 +233,9 @@ jobs:
           # handed its own config.json). So build one for crane explicitly
           # rather than relying on the earlier `docker login` having left
           # readable auths behind.
+          # umask 077: config.json below holds the Harbor push credential, and
+          # this is a shared self-hosted runner (same reason as the signing PEMs).
+          umask 077
           crane_cfg="$RUNNER_TEMP/promote-docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$crane_cfg"
           trap 'rm -rf "$crane_cfg"' EXIT

@@ -93,7 +93,9 @@ done
 
 # Reject anything that is not a tagged ghcr reference. A digest-only source has
 # no tag to carry across, and a non-ghcr source is not what this run built.
-[[ "$SOURCE" == ghcr.io/*:* ]] || {
+# `ghcr.io/*:*` alone matches a digest ref too -- `@sha256:` supplies the `:` --
+# so exclude `@` explicitly.
+[[ "$SOURCE" == ghcr.io/*:* && "$SOURCE" != *@* ]] || {
   echo "--source must be a tagged ghcr.io reference, got: $SOURCE" >&2
   exit 2
 }
@@ -129,9 +131,12 @@ EXISTING_DIGEST=$(crane digest "$DESTINATION:$TAG" 2>/dev/null) || {
     EXISTING_DIGEST=
   else
     echo "FATAL: cannot read $DESTINATION from Harbor." >&2
-    echo "This is a credential/scope problem, not an absent tag, and the two are" >&2
-    echo "not interchangeable: treating it as absent would overwrite whatever is" >&2
-    echo "actually there. The push credential is HARBOR_USERNAME/HARBOR_PASSWORD" >&2
+    echo "Listing the repository failed, which has two causes this script cannot" >&2
+    echo "tell apart: a credential/scope problem, or a repository that does not" >&2
+    echo "exist yet (Harbor answers 404 on tags/list for a never-pushed repository," >&2
+    echo "so a first-ever promotion into a new repository also lands here). Neither" >&2
+    echo "is safe to treat as an absent tag: in the first case that would overwrite" >&2
+    echo "whatever is actually there. The push credential is HARBOR_USERNAME/HARBOR_PASSWORD" >&2
     echo "in Blockcast/pkgs; it is proven to authenticate to registry.blockcast.net" >&2
     echo "but its push scope to the 'library' project has not been established." >&2
     echo "Route a named credential ask rather than widening any grant here." >&2

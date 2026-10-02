@@ -58,6 +58,13 @@ trap 'rm -rf "$stub_dir"' EXIT
 #   CRANE_LS_STATUS    0 = destination repo readable, 1 = unreadable
 #   CRANE_DEST_BEFORE  destination digest before copy, empty = tag absent
 #   CRANE_DEST_AFTER   what the destination resolves to after copy
+#   CRANE_DEST_ANON    what a credential-free resolve of the destination returns;
+#                      unset = same as an authenticated one
+#
+# "Credential-free" is modelled the way crane decides it: DOCKER_CONFIG names a
+# directory with no config.json. run_promote hands the script an authenticated
+# DOCKER_CONFIG, as the workflow does, so an anonymous-pull check that forgets
+# to override it resolves with credentials and the stub can tell.
 cat > "$stub_dir/crane" <<'STUB'
 #!/usr/bin/env bash
 state="$CRANE_STATE"
@@ -66,7 +73,10 @@ case "$1" in
     case "$2" in
       ghcr.io/*) echo "$CRANE_SOURCE"; exit 0 ;;
       *)
-        if [ -f "$state" ]; then
+        if [ -n "${CRANE_DEST_ANON:-}" ] && [ -n "${DOCKER_CONFIG:-}" ] \
+           && [ ! -f "$DOCKER_CONFIG/config.json" ]; then
+          echo "$CRANE_DEST_ANON"; exit 0
+        elif [ -f "$state" ]; then
           echo "$CRANE_DEST_AFTER"; exit 0
         elif [ -n "$CRANE_DEST_BEFORE" ]; then
           echo "$CRANE_DEST_BEFORE"; exit 0
@@ -79,6 +89,8 @@ esac
 exit 0
 STUB
 chmod +x "$stub_dir/crane"
+mkdir "$stub_dir/auth"
+echo '{}' > "$stub_dir/auth/config.json"
 
 run_promote() {
   # usage: run_promote <ls_status> <dest_before> <dest_after> [extra args...]
@@ -86,6 +98,7 @@ run_promote() {
   CRANE_STATE="$stub_dir/copied.$$.$RANDOM" \
   CRANE_SOURCE="$A" CRANE_LS_STATUS="$ls" \
   CRANE_DEST_BEFORE="$before" CRANE_DEST_AFTER="$after" \
+  DOCKER_CONFIG="$stub_dir/auth" \
   PATH="$stub_dir:$PATH" "$script" \
     --source ghcr.io/blockcast/installer:v0.0.0-test \
     --destination harbor.example.invalid/library/talos-installer "$@" 2>&1 || true
@@ -110,15 +123,20 @@ expect_output "post-copy digest mismatch aborts" \
 # ...and the happy path still reaches the anonymous-pull proof.
 expect_output "verified copy proves anonymous pull" \
   'anonymous pull path verified' "$(run_promote 0 '' "$A")"
+# guard 4 -- the anonymous resolve must actually be credential-free. Here the
+# authenticated path sees the copy and the anonymous one does not; only a check
+# that really drops the job's credentials notices.
+expect_output "anonymous resolve mismatch aborts" \
+  'FATAL: anonymous (secret-free) resolve' "$(CRANE_DEST_ANON="$B" run_promote 0 '' "$A")"
 
 # ------------------------------------------------------------ arg checks
-for bad in "ghcr.io/blockcast/installer" "docker.io/blockcast/installer:v1"; do
-  if PATH="$stub_dir:$PATH" "$script" --source "$bad" >/dev/null 2>&1; then
-    printf 'FAIL: --source %s should have been rejected\n' "$bad" >&2
-    fail=$((fail + 1))
-  else
-    pass=$((pass + 1))
-  fi
+# Assert the rejection message, not just a non-zero exit: with no stub state the
+# run fails later anyway (empty source digest), so exit status alone cannot tell
+# a rejected --source from one the guard let through.
+for bad in "ghcr.io/blockcast/installer" "docker.io/blockcast/installer:v1" \
+  "ghcr.io/blockcast/installer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"; do
+  expect_output "--source $bad rejected" 'must be a tagged ghcr.io reference' \
+    "$(PATH="$stub_dir:$PATH" "$script" --source "$bad" 2>&1 || true)"
 done
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
