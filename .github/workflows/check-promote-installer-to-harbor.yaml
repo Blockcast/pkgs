@@ -1,0 +1,67 @@
+# BLO-39281. Gates the Harbor promotion guards in
+# .github/scripts/promote-installer-to-harbor.sh, which compose-signed-installer.yml
+# runs against the real registries after every signed-installer build.
+#
+# This lane exists because that one is dispatch-only: without it the guards
+# would first be exercised during a production installer build, which is the
+# worst possible moment to find a regression in the check that decides whether
+# to repoint a tag the fleet may be pinned to.
+#
+# Pure bash against a stubbed `crane` -- no registry, no credential, no network.
+#
+# INERT as of 2026-10-02 -- tracked by BLO-37063, which owns the fix and is
+# where this line gets retired. No runner can pick this job up, so every run
+# queues and it gates nothing. This repo is public; runner group `pkgs` has
+# allows_public_repositories=false, and `pkgs-public` is restricted to
+# weekly.yaml@refs/heads/main. It becomes live only once an org admin allows
+# public repositories on `pkgs`, or adds this workflow to `pkgs-public`'s
+# selected workflows -- with a ref that matches `pull_request` runs, which
+# refs/heads/main does not. Until then, run both scripts below locally before
+# changing the promotion script.
+#
+# Not specific to this lane: ci.yaml is on `runs-on: pkgs` too (:28, :129), so
+# no `pull_request` job of any kind has executed in this repo since 2026-06-26.
+# That is the condition BLO-37063 tracks; this header is its local symptom.
+name: check-promote-installer-to-harbor
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/promote-installer-to-harbor.sh
+      - .github/scripts/test-promote-installer-to-harbor.sh
+      - .github/scripts/test-promote-installer-mutations.sh
+      - .github/workflows/check-promote-installer-to-harbor.yaml
+      - .github/workflows/compose-signed-installer.yml
+  push:
+    branches:
+      - main
+    # Repeated rather than a YAML anchor: GitHub Actions' workflow parser does
+    # not resolve anchors/aliases.
+    paths:
+      - .github/scripts/promote-installer-to-harbor.sh
+      - .github/scripts/test-promote-installer-to-harbor.sh
+      - .github/scripts/test-promote-installer-mutations.sh
+      - .github/workflows/check-promote-installer-to-harbor.yaml
+      - .github/workflows/compose-signed-installer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: pkgs
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Guard tests
+        run: .github/scripts/test-promote-installer-to-harbor.sh
+
+      # A guard with no failing mutation is a comment. This removes each guard
+      # in turn and requires the suite above to go red, so a guard cannot be
+      # quietly deleted while its tests keep passing.
+      - name: Every guard has a failing mutation
+        run: .github/scripts/test-promote-installer-mutations.sh
