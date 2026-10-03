@@ -1,5 +1,69 @@
 # pkgs
 
+> **Blockcast fork.** Upstream is [`siderolabs/pkgs`](https://github.com/siderolabs/pkgs).
+> Read the next section before rebuilding anything that production boots.
+
+## Which ref builds the production kernel
+
+**`ci/talos-v1.14.0` is the authoritative source of the Talos kernel the
+production AMT data nodes run. `main` is not, and must not be made into one.**
+
+Upstream's release model is one branch per Talos minor (`release-1.13`,
+`release-1.14`, …), and this fork inherited it. `main` tracks upstream `main`
+plus the Blockcast overlay and is deliberately **not** version-pinned, so its
+kernel version drifts freely — it reads **6.18.34** today while the fleet runs
+**6.18.48**. A version-pinned production build belongs on a version branch; that
+is what `ci/talos-v1.14.0` is. Merging it into `main` would produce a ref
+matching neither upstream line and would pin `main` to Talos v1.14 forever.
+
+Nor could `main` ever be made to agree in steady state: upstream `release-1.14`
+is already at **6.18.54** against our pinned 6.18.48. Pinning is the point.
+
+### Reconstruction recipe
+
+If `ci/talos-v1.14.0` is ever deleted or force-moved, rebuild the production
+kernel from these two facts — this recipe, not the branch name, is what makes
+the build durable:
+
+| | |
+|---|---|
+| upstream base | `siderolabs/pkgs` **`2f03590c50e45a9439a4b3abcdbe247693c179e0`** (an ancestor of `release-1.14`: `ahead_by: 0`) |
+| Blockcast overlay | **`1da0fb6f3684d2860ecfeab3115e7cd4388084d7`** — "build(talos): port the signed ct6 kernel and installer builds to v1.14.0" (Omar Ramadan, 2026-09-05), the branch tip and its *only* non-upstream commit |
+| built by | `.github/workflows/build-ct6-mroute-kernel.yml`, `workflow_dispatch` |
+| publishes | `ghcr.io/blockcast/kernel:v1.14.0-amt-ct6-mroute` |
+| production build | [run 33968874224](https://github.com/Blockcast/pkgs/actions/runs/33968874224), success 2026-09-05, `head_sha=1da0fb6f3` |
+
+That tag is the `OS-IMAGE` every Talos node reports (`Talos
+(v1.14.0-amt-ct6-mroute)`, kernel `6.18.48-talos`).
+
+### ⚠ Do not dispatch the ct6 build from `main` with a production tag
+
+`build-ct6-mroute-kernel.yml` exists on **both** refs with correctly paired
+defaults (`main` → `v1.13.4` / `6.18.34`; `ci/talos-v1.14.0` → `v1.14.0` /
+`6.18.48`), so a *default* dispatch from `main` is harmless.
+
+But `image_tag` and `kver` are validated **independently and never against each
+other** — `image_tag` is only format-checked (`v[0-9]*.[0-9]*.[0-9]*-*`), while
+`kver` is asserted against that ref's `kernel/build/config-amd64`. So a dispatch
+from `main` passing `image_tag=v1.14.0-amt-ct6-mroute` with `kver=6.18.34`
+satisfies both guards and **republishes production's tag from a 6.18.34
+kernel**. The `amt.ko` built against 6.18.48 then fails to load on nodes running
+that image (precedent: `8806c2ad`, exec-format on v1.13.4).
+
+Dispatch production builds from `ci/talos-v1.14.0`. See
+[BLO-33964](https://paperclip.blockcast.net/BLO/issues/BLO-33964).
+
+### Kernel-version agreement is checked, in the other repo
+
+`Blockcast/linux-amt` builds the `amt.ko` that must load into this kernel. Its
+`kernel/talos-extension/PRODUCTION_KERNEL` declares both the fleet kernel and
+the `pkgs` ref above (`pkgs_ref=`), and `check-kver-drift.sh` fails CI if this
+repo's `kernel/build/config-amd64` at that ref disagrees. **If you move the
+authoritative ref, update `pkgs_ref` there in the same change** — otherwise that
+check goes red (or, worse, keeps passing against a stale branch).
+
+## Upstream: what this repo builds
+
 ![Dependency Diagram](/deps.svg)
 
 This repository produces a set of packages that can be used to build a rootfs suitable for creating custom Linux distributions.
