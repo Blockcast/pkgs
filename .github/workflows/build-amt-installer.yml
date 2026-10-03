@@ -91,9 +91,12 @@ jobs:
           # Every value below is appended to $GITHUB_OUTPUT, so a newline in any
           # of them injects an extra step output. The format globs above do not
           # catch it (* matches whitespace) and pkgs_sha has no glob at all.
-          for v in "$TALOS" "$PKGS" "$KIMG" "$INSTALLER_TAG"; do
-            case "$v" in *[[:space:]]*)
-              printf 'input contains whitespace: %q\n' "$v" >&2; exit 1 ;;
+          # Iterate over NAMES, not values: %q shows the value but not which
+          # input it came from, and pkgs_sha is the one least recognisable
+          # from its content alone.
+          for n in TALOS PKGS KIMG INSTALLER_TAG; do
+            case "${!n}" in *[[:space:]]*)
+              printf '%s contains whitespace: %q\n' "$n" "${!n}" >&2; exit 1 ;;
             esac
           done
           echo "talos=$TALOS" >> "$GITHUB_OUTPUT"

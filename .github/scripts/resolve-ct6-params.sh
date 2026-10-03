@@ -40,8 +40,13 @@ resolve() {
 
   # -F: kver's dots are BRE wildcards otherwise, so a header reading
   # "Linux/x86 6918934" would satisfy a Pkgfile declaring 6.18.34.
+  # %q for the same reason as talos_version above: on a Pkgfile where only
+  # linux_version carries a CR, a raw %s renders "says linux_version=6.18.34,
+  # <config> header disagrees" -- an apparent self-contradiction, since the
+  # value shown is the value the header contains.
   grep -qF "Linux/x86 ${kver} Kernel Configuration" "$config" ||
-    { echo "kernel mismatch: $pkgfile says linux_version=${kver}, $config header disagrees" >&2; return 1; }
+    { printf 'kernel mismatch: %s says linux_version=%q, %s header disagrees\n' \
+        "$pkgfile" "$kver" "$config" >&2; return 1; }
 
   tag="${in_tag:-${talos}-amt-ct6-mroute}"
   case "$tag" in v[0-9]*.[0-9]*.[0-9]*-*) : ;; *) echo "bad image_tag: $tag" >&2; return 1 ;; esac
@@ -75,7 +80,9 @@ self_test() {
     if err="$(resolve "$d/Pkgfile" "$d/config" "${2-}" 2>&1 >/dev/null)"; then
       echo "FAIL $1 (expected reject)"; fails=$((fails + 1))
     elif [ -n "${3-}" ] && [ "${err#*"$3"}" = "$err" ]; then
-      echo "FAIL $1 (rejected, but not for '$3': $err)"; fails=$((fails + 1))
+      # printf, not echo: a probe key containing a backslash escape (\r) is
+      # swallowed by echo, so the diagnostic would read "not for ''".
+      printf "FAIL %s (rejected, but not for '%s': %s)\n" "$1" "$3" "$err"; fails=$((fails + 1))
     else
       echo "ok   $1"
     fi
@@ -101,6 +108,14 @@ self_test() {
   printf '#\n# Linux/x86 6.18.48 Kernel Configuration\n#\n' > "$d/config"
   bad "Pkgfile/config kernel disagreement rejected" "" "header disagrees"
   printf '#\n# Linux/x86 6.18.34 Kernel Configuration\n#\n' > "$d/config"
+
+  # Only linux_version carries the CR, so talos_version's guard above does not
+  # fire first. Keyed on the literal backslash-r that %q emits (in either
+  # rendering) -- reverting to %s prints a raw CR and the message then reads as
+  # a self-contradiction: the value shown is the value the header contains.
+  printf 'vars:\n  linux_version: 6.18.34\r\n  talos_version: v1.13.4\n' > "$d/Pkgfile"
+  bad "CR-only-on-linux_version rendered visibly" "" '\r'
+  printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.13.4\n' > "$d/Pkgfile"
 
   printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.13.4   \n' > "$d/Pkgfile"
   # Keyed on the full "talos_version contains whitespace" phrase, not the bare
