@@ -10,7 +10,10 @@ on:
       - main
 jobs:
   check:
-    runs-on: pkgs
+    # Deliberately NOT the self-hosted `pkgs` label: that queue is shared with
+    # the kernel builds, where a `default` run can sit ~2h. A guard that reports
+    # after the review is over is not a guard. These steps are checkout + shell.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
