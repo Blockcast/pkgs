@@ -1,7 +1,7 @@
 # Compose the DEPLOYABLE SecureBoot-signed Talos installer for the AMT data nodes:
 #   imager = ghcr.io/blockcast/imager:<tag>           (custom kernel/payload)
 #   base   = ghcr.io/blockcast/installer:<tag>        (custom installer base)
-#   ext    = ghcr.io/blockcast/amt-kmod:v1.13.4       (signed amt.ko extension,
+#   ext    = ghcr.io/blockcast/amt-kmod:<talos>      (signed amt.ko extension,
 #            built by linux-amt build-amt-kmod-talos.yml)
 #   -> ghcr.io/blockcast/installer:<tag>-signed
 #
@@ -20,17 +20,20 @@ on:
   workflow_dispatch:
     inputs:
       base_installer:
-        default: 'ghcr.io/blockcast/installer:v1.13.4-amt'
+        description: 'Custom installer base, e.g. ghcr.io/blockcast/installer:<talos>-amt'
+        required: true
         type: string
       imager_image:
         description: 'Custom imager image; empty derives ghcr.io/blockcast/imager:<base tag>'
         default: ''
         type: string
       extension:
-        default: 'ghcr.io/blockcast/amt-kmod:v1.13.4'
+        description: 'Signed amt.ko extension; empty derives ghcr.io/blockcast/amt-kmod:<talos of base tag>'
+        default: ''
         type: string
       out_tag:
-        default: 'ghcr.io/blockcast/installer:v1.13.4-amt-signed'
+        description: 'Output ref; empty derives <base_installer>-signed'
+        default: ''
         type: string
 concurrency:
   group: compose-signed-installer-${{ github.ref }}
@@ -90,17 +93,33 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${IMAGER:-}" ]; then
-            case "$BASE" in
-              ghcr.io/blockcast/installer:*)
-                IMAGER="ghcr.io/blockcast/imager:${BASE#ghcr.io/blockcast/installer:}"
-                ;;
-              *)
-                echo "imager_image input is required when base_installer is not ghcr.io/blockcast/installer:<tag>" >&2
-                exit 1
-                ;;
-            esac
-          fi
+          # base_installer is the only version this workflow is told. Everything
+          # else derives from its tag, so the three refs cannot name different
+          # Talos releases and no default can go stale (BLO-39684).
+          : "${BASE:?base_installer is required}"
+          case "$BASE" in
+            ghcr.io/blockcast/installer:*)
+              BASE_TAG="${BASE#ghcr.io/blockcast/installer:}"
+              # BASE_TAG is the only version this workflow is told, and all three
+              # refs below derive from it, so an unchecked one propagates. A
+              # floating `latest` or an empty tag would otherwise compose and
+              # publish a *signed* installer from components whose Talos pairing
+              # was never checked -- the same class as the bug BLO-39684 closes.
+              case "$BASE_TAG" in
+                v[0-9]*.[0-9]*.[0-9]*-*) : ;;
+                *) echo "base_installer tag '${BASE_TAG}' is not <version>-<variant>" >&2; exit 1 ;;
+              esac
+              : "${IMAGER:=ghcr.io/blockcast/imager:${BASE_TAG}}"
+              : "${EXT:=ghcr.io/blockcast/amt-kmod:${BASE_TAG%%-*}}"
+              : "${OUT:=${BASE}-signed}"
+              ;;
+            *)
+              for n in IMAGER EXT OUT; do
+                [ -n "${!n:-}" ] || { echo "${n} input is required when base_installer is not ghcr.io/blockcast/installer:<tag>" >&2; exit 1; }
+              done
+              ;;
+          esac
+          echo "base=$BASE imager=$IMAGER ext=$EXT out=$OUT"
 
           sock="${DOCKER_HOST#unix://}"
           sock="${sock:-/var/run/docker.sock}"
