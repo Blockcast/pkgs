@@ -17,6 +17,12 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    env:
+      # `.github`, not `.github/workflows`: the version-bearing logic lives in
+      # .github/scripts/ now, and scanning only the workflows dir left the
+      # resolver unguarded. Single-sourced so the negative control below
+      # exercises the same root the real check does.
+      SCAN_ROOT: .github
     steps:
       - uses: actions/checkout@v4
 
@@ -30,4 +36,23 @@ jobs:
         run: .github/scripts/check-no-version-literal.sh --self-test
 
       - name: No version literal in workflow defaults, fallbacks or env blocks
-        run: .github/scripts/check-no-version-literal.sh .github/workflows
+        run: .github/scripts/check-no-version-literal.sh "$SCAN_ROOT"
+
+      - name: Guard actually covers .github/scripts (negative control)
+        # The scan root lives in this file, not in the script, so the script's
+        # own --self-test cannot catch it being narrowed back to
+        # .github/workflows. This step is that mutation's failing test -- it
+        # must read the same SCAN_ROOT as the step above, or narrowing that
+        # value would leave this one passing against a root nobody uses.
+        run: |
+          trap 'rm -f .github/scripts/_negative_control.sh' EXIT
+          # Held in a lowercase var so this step is not itself a hit: the guard
+          # matches `default:`, `:[-=?]` and `[A-Z_]+[:=]`, none of which a
+          # lowercase assignment trips.
+          ver="v1.13.4"
+          printf 'talos="${talos:-%s}"\n' "$ver" > .github/scripts/_negative_control.sh
+          if .github/scripts/check-no-version-literal.sh "$SCAN_ROOT" >/dev/null 2>&1; then
+            echo "guard passed a version literal planted in .github/scripts" >&2
+            exit 1
+          fi
+          echo "ok: guard catches a literal outside .github/workflows"

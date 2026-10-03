@@ -84,7 +84,10 @@ self_test() {
   echo "all checks passed"
 }
 
+usage() { echo "usage: $0 <Pkgfile> <config-amd64> [image_tag] | --self-test" >&2; exit 2; }
+
 case "${1-}" in
   --self-test) self_test ;;
-  *) resolve "$@" ;;
+  '') usage ;;
+  *) [ $# -ge 2 ] || usage; resolve "$@" ;;
 esac

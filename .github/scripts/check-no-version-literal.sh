@@ -25,12 +25,17 @@ ALLOW='CRANE_VER'
 
 # Scans a directory -- not a *.yml glob. 4 of this repo's 10 workflow files are
 # .yaml, including the kres-generated ci.yaml, where a regenerated input default
-# would land.
+# would land. Callers should hand it `.github`, not `.github/workflows`: the
+# version-bearing logic now lives in `.github/scripts/` too.
+#
+# This file is excluded because its own probes below are literals by design.
+# That is the only exclusion; a real literal anywhere else under .github is a
+# hit.
 scan() {
   # A prose comment *about* a removed literal is not a literal. `[^#]*` in
   # PATTERN only blocks a `#` after the marker, so full-line comments are
   # dropped here.
-  grep -rnE "$PATTERN" "$1" 2>/dev/null |
+  grep -rnE "$PATTERN" "$1" --exclude="$(basename "$0")" 2>/dev/null |
     grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
     grep -vE "($ALLOW)[[:space:]]*[:=]"
 }
@@ -42,7 +47,7 @@ self_test() {
 
   # $1 name, $2 catch|pass, $3 the line, $4 filename (default a.yml)
   probe() {
-    rm -f "$d"/*.yml "$d"/*.yaml
+    rm -f "$d"/*
     printf '%s\n' "$3" > "$d/${4:-a.yml}"
     if scan "$d" >/dev/null 2>&1; then got=catch; else got=pass; fi
     if [ "$got" = "$2" ]; then
@@ -64,6 +69,16 @@ self_test() {
 
   # Scanning the directory rather than *.yml: this fails if the glob comes back.
   probe "literal in a .yaml file" catch "    default: 'v1.13.4'" b.yaml
+
+  # Non-workflow files under the scan root are in scope -- the resolver lives in
+  # .github/scripts/ and carries the `:-` idiom, so it is exactly the surface a
+  # literal would come back on.
+  probe "literal in a shell script" catch '          talos="${talos:-v1.13.4}"' c.sh
+
+  # ...except this file, whose probes are literals by design. Fails if the
+  # --exclude is dropped, which would red every run on the guard's own fixtures.
+  probe "guard's own fixtures skipped" pass \
+    "    default: 'v1.13.4'" check-no-version-literal.sh
 
   # False positives that would red the build on correct code.
   probe "tool pin left alone"     pass  '          CRANE_VER="v0.20.2"'
