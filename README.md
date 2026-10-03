@@ -74,6 +74,15 @@ the check fail. "surface 8" is also the search term for finding the right block 
 **If you move the authoritative ref, update `pkgs_ref` there in the same change.**
 Otherwise that check goes red — or worse, keeps passing against a stale branch.
 
+"In the same change" is load-bearing, because surface 8 cannot catch you promptly.
+Moving a ref *here* produces **zero activity in `linux-amt`**, so it matches none of
+`amt-artifact-drift.yml`'s `pull_request` path filters, and nothing in this repo's CI
+checks the relationship at all. The only trigger that fires on a `pkgs`-side move is
+that workflow's weekly cron (`23 7 * * 1` — Mondays 07:23 UTC), so a forgotten
+`pkgs_ref` stays invisible for **up to ~7 days** unless an unrelated PR happens to
+touch `linux-amt`'s `kernel/talos-extension/**`. Surface 8 is a backstop on that
+cadence, not a safety net you can lean on within a working day.
+
 ## Upstream: what this repo builds
 
 ![Dependency Diagram](/deps.svg)
