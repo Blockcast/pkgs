@@ -1,0 +1,96 @@
+#!/bin/sh
+# Rejects Talos/kernel version literals in workflow input defaults, shell
+# fallbacks and env blocks. Versions belong in Pkgfile (talos_version /
+# linux_version), which is what the build actually reads; a literal in a
+# workflow can disagree with the ref it runs on, and this repo shipped stale
+# defaults for two Talos minors after the fleet moved on (BLO-39684).
+#
+# Usage: check-no-version-literal.sh <dir>
+#        check-no-version-literal.sh --self-test
+set -eu
+
+# Every form a version literal can come back in:
+#   default:      a workflow_dispatch input default
+#   :[-=?]        ${X:-v}, ${X:=v}, ${X:?v}
+#   [A-Z_]+[:=]   a bare `TAG=v`, an `env:` key, and `${X-v}` via its
+#                 assignment prefix
+# Lowercase `description:` prose is deliberately not matched -- those are
+# examples, not values.
+PATTERN='(default:|:[-=?]|[A-Z_]+[:=])[^#]*v?[0-9]+\.[0-9]+\.[0-9]+'
+
+# Tool pins are not fleet versions and are correctly hardcoded. Keep this list
+# short and explicit: adding to it should be a deliberate "is this a Talos or
+# kernel version?" decision, not a reflex to turn the build green.
+ALLOW='CRANE_VER'
+
+# Scans a directory -- not a *.yml glob. 4 of this repo's 10 workflow files are
+# .yaml, including the kres-generated ci.yaml, where a regenerated input default
+# would land.
+scan() {
+  # A prose comment *about* a removed literal is not a literal. `[^#]*` in
+  # PATTERN only blocks a `#` after the marker, so full-line comments are
+  # dropped here.
+  grep -rnE "$PATTERN" "$1" 2>/dev/null |
+    grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
+    grep -vE "($ALLOW)[[:space:]]*[:=]"
+}
+
+self_test() {
+  d="$(mktemp -d)"
+  trap 'rm -rf "$d"' EXIT
+  fails=0
+
+  # $1 name, $2 catch|pass, $3 the line, $4 filename (default a.yml)
+  probe() {
+    rm -f "$d"/*.yml "$d"/*.yaml
+    printf '%s\n' "$3" > "$d/${4:-a.yml}"
+    if scan "$d" >/dev/null 2>&1; then got=catch; else got=pass; fi
+    if [ "$got" = "$2" ]; then
+      echo "ok   $1"
+    else
+      echo "FAIL $1 (expected $2, got $got)"
+      fails=$((fails + 1))
+    fi
+  }
+
+  # The six reintroduction forms. Before BLO-39684's review only the first two
+  # were caught; the other four are the regressions this suite exists for.
+  probe "input default"           catch "    default: 'v1.13.4'"
+  probe "shell fallback \${X:-}"   catch '          TAG="${IN_TAG:-v1.13.4-amt}"'
+  probe "shell default \${X:=}"    catch '          : "${IN_TAG:=v1.13.4-amt}"'
+  probe "shell fallback \${X-}"    catch '          TAG="${IN_TAG-v1.13.4-amt}"'
+  probe "bare assignment"         catch '          TAG=v1.13.4-amt'
+  probe "env: block"              catch '      TALOS: v1.13.4'
+
+  # Scanning the directory rather than *.yml: this fails if the glob comes back.
+  probe "literal in a .yaml file" catch "    default: 'v1.13.4'" b.yaml
+
+  # False positives that would red the build on correct code.
+  probe "tool pin left alone"     pass  '          CRANE_VER="v0.20.2"'
+  probe "prose comment about a removed default" pass \
+    '          # the old default: v1.13.4 was removed in BLO-39684'
+  probe "description prose"       pass  "        description: 'image tag; defaults to the Pkgfile value'"
+  probe "clean workflow"          pass  '    runs-on: ubuntu-latest'
+
+  [ "$fails" -eq 0 ] || { echo "$fails check(s) failed" >&2; return 1; }
+  echo "all checks passed"
+}
+
+case "${1-}" in
+  --self-test)
+    self_test
+    ;;
+  '')
+    echo "usage: $0 <dir> | --self-test" >&2
+    exit 2
+    ;;
+  *)
+    hits="$(scan "$1" || true)"
+    if [ -n "$hits" ]; then
+      printf '%s\n' "$hits"
+      echo "^^ version literal above; declare it in Pkgfile and derive it (BLO-39684)" >&2
+      exit 1
+    fi
+    echo "no version literals in workflow defaults, fallbacks or env blocks"
+    ;;
+esac

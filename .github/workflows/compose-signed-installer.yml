@@ -100,6 +100,15 @@ jobs:
           case "$BASE" in
             ghcr.io/blockcast/installer:*)
               BASE_TAG="${BASE#ghcr.io/blockcast/installer:}"
+              # BASE_TAG is the only version this workflow is told, and all three
+              # refs below derive from it, so an unchecked one propagates. A
+              # floating `latest` or an empty tag would otherwise compose and
+              # publish a *signed* installer from components whose Talos pairing
+              # was never checked -- the same class as the bug BLO-39684 closes.
+              case "$BASE_TAG" in
+                v[0-9]*.[0-9]*.[0-9]*-*) : ;;
+                *) echo "base_installer tag '${BASE_TAG}' is not <version>-<variant>" >&2; exit 1 ;;
+              esac
               : "${IMAGER:=ghcr.io/blockcast/imager:${BASE_TAG}}"
               : "${EXT:=ghcr.io/blockcast/amt-kmod:${BASE_TAG%%-*}}"
               : "${OUT:=${BASE}-signed}"

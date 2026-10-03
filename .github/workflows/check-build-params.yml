@@ -26,15 +26,8 @@ jobs:
       - name: Resolve against this ref for real
         run: .github/scripts/resolve-ct6-params.sh Pkgfile kernel/build/config-amd64
 
-      - name: No version literal in workflow defaults or shell fallbacks
-        run: |
-          set -euo pipefail
-          # Versions belong in Pkgfile (talos_version / linux_version), which is
-          # what the build reads. A literal in an input default or a `${X:-...}`
-          # fallback can disagree with the ref it runs on; one in Pkgfile cannot.
-          # `description:` examples are prose, not values, and are not matched.
-          if grep -rnE '(default:|:-)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/*.yml; then
-            echo "^^ version literal above; declare it in Pkgfile and derive it (BLO-39684)" >&2
-            exit 1
-          fi
-          echo "no version literals in workflow defaults or fallbacks"
+      - name: No-version-literal guard self-test
+        run: .github/scripts/check-no-version-literal.sh --self-test
+
+      - name: No version literal in workflow defaults, fallbacks or env blocks
+        run: .github/scripts/check-no-version-literal.sh .github/workflows
