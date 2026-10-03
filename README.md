@@ -27,7 +27,7 @@ the build durable:
 
 | | |
 |---|---|
-| upstream base | `siderolabs/pkgs` **`2f03590c50e45a9439a4b3abcdbe247693c179e0`** (an ancestor of `release-1.14`: `ahead_by: 0`) |
+| upstream base | `siderolabs/pkgs` **`2f03590c50e45a9439a4b3abcdbe247693c179e0`** — an ancestor of `release-1.14`, i.e. it carries nothing of its own. Verify with `gh api repos/siderolabs/pkgs/compare/2f03590c...release-1.14 --jq .behind_by` → `0`. (Run in that direction: the reverse comparison reports `ahead_by: 22`, which is the same fact read backwards.) |
 | Blockcast overlay | **`1da0fb6f3684d2860ecfeab3115e7cd4388084d7`** — "build(talos): port the signed ct6 kernel and installer builds to v1.14.0" (Omar Ramadan, 2026-09-05), the branch tip and its *only* non-upstream commit |
 | built by | `.github/workflows/build-ct6-mroute-kernel.yml`, `workflow_dispatch` |
 | publishes | `ghcr.io/blockcast/kernel:v1.14.0-amt-ct6-mroute` |
@@ -48,19 +48,27 @@ other** — `image_tag` is only format-checked (`v[0-9]*.[0-9]*.[0-9]*-*`), whil
 from `main` passing `image_tag=v1.14.0-amt-ct6-mroute` with `kver=6.18.34`
 satisfies both guards and **republishes production's tag from a 6.18.34
 kernel**. The `amt.ko` built against 6.18.48 then fails to load on nodes running
-that image (precedent: `8806c2ad`, exec-format on v1.13.4).
+that image (precedent: [`Blockcast/linux-amt@8806c2ad69`](https://github.com/Blockcast/linux-amt/commit/8806c2ad69),
+in the *sibling* repo rather than this one — exec-format on v1.13.4).
 
 Dispatch production builds from `ci/talos-v1.14.0`. See
 [BLO-33964](https://paperclip.blockcast.net/BLO/issues/BLO-33964).
 
-### Kernel-version agreement is checked, in the other repo
+### Kernel-version agreement — NOT yet enforced
 
-`Blockcast/linux-amt` builds the `amt.ko` that must load into this kernel. Its
-`kernel/talos-extension/PRODUCTION_KERNEL` declares both the fleet kernel and
-the `pkgs` ref above (`pkgs_ref=`), and `check-kver-drift.sh` fails CI if this
-repo's `kernel/build/config-amd64` at that ref disagrees. **If you move the
-authoritative ref, update `pkgs_ref` there in the same change** — otherwise that
-check goes red (or, worse, keeps passing against a stale branch).
+`Blockcast/linux-amt` builds the `amt.ko` that must load into this kernel, so the two
+must agree on a kernel version. **Nothing enforces that agreement today.**
+
+[`Blockcast/linux-amt#255`](https://github.com/Blockcast/linux-amt/pull/255) adds it: a
+`pkgs_ref=` key in `kernel/talos-extension/PRODUCTION_KERNEL` naming the authoritative
+ref above, and a check that fails CI when this repo's `kernel/build/config-amd64` at
+that ref disagrees with the declared fleet kernel. **Until that PR merges, a
+disagreement is caught only at node-load** — which is the failure this document exists
+to warn about.
+
+Once it has merged: if you move the authoritative ref, update `pkgs_ref` there in the
+**same** change. Otherwise that check goes red — or worse, keeps passing against a
+stale branch.
 
 ## Upstream: what this repo builds
 
