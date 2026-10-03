@@ -1,9 +1,9 @@
 # Compose the Blockcast custom Talos installer that consumes our custom kernel
-# pkg (ghcr.io/blockcast/kernel:v1.13.4-amt). Produces:
+# pkg (ghcr.io/blockcast/kernel:<talos>-amt). Produces:
 #
-#   ghcr.io/blockcast/installer:v1.13.4-amt
+#   ghcr.io/blockcast/installer:<talos>-amt
 #
-# Depends on build-amt-kernel-pkg.yml having published the kernel image first.
+# Depends on build-ct6-mroute-kernel.yml having published the kernel image first.
 # Design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md (Stage 2)
 #
 # BUILD GRAPH (the subtlety the design doc under-specified): Talos `make
@@ -33,24 +33,21 @@ on:
   workflow_dispatch:
     inputs:
       talos_version:
-        description: 'siderolabs/talos tag to check out (e.g. v1.13.4)'
-        required: false
-        default: 'v1.13.4'
+        description: 'siderolabs/talos tag to check out (e.g. v1.14.0)'
+        required: true
         type: string
       pkgs_sha:
         description: 'PKGS pin Talos uses (e.g. v1.13.0-28-g54ec9fc)'
-        required: false
-        default: 'v1.13.0-28-g54ec9fc'
+        required: true
         type: string
       kernel_image:
-        description: 'Custom kernel image ref from build-amt-kernel-pkg'
-        required: false
-        default: 'ghcr.io/blockcast/kernel:v1.13.4-amt'
+        description: 'Custom kernel image ref from build-ct6-mroute-kernel'
+        required: true
         type: string
       installer_tag:
-        description: 'Installer image tag to publish'
+        description: 'Installer image tag to publish; empty derives <talos_version>-amt'
         required: false
-        default: 'v1.13.4-amt'
+        default: ''
         type: string
 
 concurrency:
@@ -74,12 +71,23 @@ jobs:
           IN_INSTALLER_TAG: ${{ inputs.installer_tag }}
         run: |
           set -euo pipefail
-          TALOS="${IN_TALOS:-v1.13.4}"
-          PKGS="${IN_PKGS:-v1.13.0-28-g54ec9fc}"
-          KIMG="${IN_KIMG:-ghcr.io/blockcast/kernel:v1.13.4-amt}"
+          # No version fallbacks here by design: a default is a drift surface
+          # that has to be hand-refreshed at every Talos bump, and silently
+          # builds a stale artifact when nobody does (BLO-39684). Omitting a
+          # required input fails the dispatch instead.
+          TALOS="${IN_TALOS:?talos_version is required}"
+          PKGS="${IN_PKGS:?pkgs_sha is required}"
+          KIMG="${IN_KIMG:?kernel_image is required}"
           INSTALLER_TAG="${IN_INSTALLER_TAG:-${TALOS}-amt}"
           case "$TALOS" in v[0-9]*.[0-9]*.[0-9]*) : ;; *) echo "bad talos: $TALOS" >&2; exit 1 ;; esac
           case "$INSTALLER_TAG" in v[0-9]*.[0-9]*.[0-9]*-*) : ;; *) echo "bad installer_tag: $INSTALLER_TAG" >&2; exit 1 ;; esac
+          # The kernel image must be the one built for this Talos release, or
+          # the installer ships a kernel the fleet's amt.ko cannot load.
+          case "$KIMG" in *:"${TALOS}"-*) : ;; *)
+            echo "kernel_image '$KIMG' is not tagged for Talos ${TALOS}" >&2; exit 1 ;;
+          esac
+          [ "${INSTALLER_TAG%%-*}" = "$TALOS" ] ||
+            { echo "installer_tag '$INSTALLER_TAG' does not match talos_version ${TALOS}" >&2; exit 1; }
           echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
           echo "pkgs=$PKGS"   >> "$GITHUB_OUTPUT"
           echo "kimg=$KIMG"   >> "$GITHUB_OUTPUT"

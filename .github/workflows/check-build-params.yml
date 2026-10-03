@@ -1,0 +1,37 @@
+# Cheap guard for the kernel-build params. Runs on every PR so the version
+# literals deleted in BLO-39684 cannot come back: a workflow_dispatch default
+# that pins a Talos/kernel version is a drift surface by construction, and this
+# repo shipped stale defaults for two Talos minors after the fleet moved on.
+name: check-build-params
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+jobs:
+  check:
+    runs-on: pkgs
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolver self-test
+        run: .github/scripts/resolve-ct6-params.sh --self-test
+
+      - name: Resolve against this ref for real
+        run: .github/scripts/resolve-ct6-params.sh Pkgfile kernel/build/config-amd64
+
+      - name: No version literal in workflow defaults or shell fallbacks
+        run: |
+          set -euo pipefail
+          # Versions belong in Pkgfile (talos_version / linux_version), which is
+          # what the build reads. A literal in an input default or a `${X:-...}`
+          # fallback can disagree with the ref it runs on; one in Pkgfile cannot.
+          # `description:` examples are prose, not values, and are not matched.
+          if grep -rnE '(default:|:-)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/*.yml; then
+            echo "^^ version literal above; declare it in Pkgfile and derive it (BLO-39684)" >&2
+            exit 1
+          fi
+          echo "no version literals in workflow defaults or fallbacks"
