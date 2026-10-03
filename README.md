@@ -27,7 +27,7 @@ the build durable:
 
 | | |
 |---|---|
-| upstream base | `siderolabs/pkgs` **`2f03590c50e45a9439a4b3abcdbe247693c179e0`** — an ancestor of `release-1.14`, i.e. it carries nothing of its own. Verify with `gh api repos/siderolabs/pkgs/compare/2f03590c...release-1.14 --jq .behind_by` → `0`. (Run in that direction: reversed it reports `ahead_by: 0`/`behind_by: 22`, the same fact read backwards — don't read that `ahead_by: 0` as support for this claim.) |
+| upstream base | `siderolabs/pkgs` **`2f03590c50e45a9439a4b3abcdbe247693c179e0`** — an ancestor of `release-1.14`, i.e. it carries nothing of its own. Verify with `gh api repos/siderolabs/pkgs/compare/2f03590c...release-1.14 --jq .behind_by` → `0`. (Run in that direction: reversed it reports `ahead_by: 0`/`behind_by: 22`, the same fact read backwards.) |
 | Blockcast overlay | **`1da0fb6f3684d2860ecfeab3115e7cd4388084d7`** — "build(talos): port the signed ct6 kernel and installer builds to v1.14.0" (Omar Ramadan, 2026-09-05), the branch tip and its *only* non-upstream commit |
 | built by | `.github/workflows/build-ct6-mroute-kernel.yml`, `workflow_dispatch` |
 | publishes | `ghcr.io/blockcast/kernel:v1.14.0-amt-ct6-mroute` |
