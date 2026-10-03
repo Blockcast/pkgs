@@ -88,6 +88,14 @@ jobs:
           esac
           [ "${INSTALLER_TAG%%-*}" = "$TALOS" ] ||
             { echo "installer_tag '$INSTALLER_TAG' does not match talos_version ${TALOS}" >&2; exit 1; }
+          # Every value below is appended to $GITHUB_OUTPUT, so a newline in any
+          # of them injects an extra step output. The format globs above do not
+          # catch it (* matches whitespace) and pkgs_sha has no glob at all.
+          for v in "$TALOS" "$PKGS" "$KIMG" "$INSTALLER_TAG"; do
+            case "$v" in *[[:space:]]*)
+              printf 'input contains whitespace: %q\n' "$v" >&2; exit 1 ;;
+            esac
+          done
           echo "talos=$TALOS" >> "$GITHUB_OUTPUT"
           echo "pkgs=$PKGS"   >> "$GITHUB_OUTPUT"
           echo "kimg=$KIMG"   >> "$GITHUB_OUTPUT"

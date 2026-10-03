@@ -33,14 +33,25 @@ resolve() {
   # survives both guards and lands a tag with spaces in $GITHUB_OUTPUT, failing
   # at docker push after the whole kernel build.
   case "$talos" in
-    *[[:space:]]*) echo "$pkgfile: talos_version '$talos' contains whitespace" >&2; return 1 ;;
+    # %q so a trailing space or a CR from a CRLF-edited Pkgfile is visible --
+    # both render as an apparently-correct value otherwise.
+    *[[:space:]]*) printf '%s: talos_version contains whitespace: %q\n' "$pkgfile" "$talos" >&2; return 1 ;;
   esac
 
-  grep -q "Linux/x86 ${kver} Kernel Configuration" "$config" ||
+  # -F: kver's dots are BRE wildcards otherwise, so a header reading
+  # "Linux/x86 6918934" would satisfy a Pkgfile declaring 6.18.34.
+  grep -qF "Linux/x86 ${kver} Kernel Configuration" "$config" ||
     { echo "kernel mismatch: $pkgfile says linux_version=${kver}, $config header disagrees" >&2; return 1; }
 
   tag="${in_tag:-${talos}-amt-ct6-mroute}"
   case "$tag" in v[0-9]*.[0-9]*.[0-9]*-*) : ;; *) echo "bad image_tag: $tag" >&2; return 1 ;; esac
+  # Same hazard as talos_version above, on the input a human actually types:
+  # the glob's * matches spaces and newlines, and the cross-check below only
+  # looks at ${tag%%-*}, so everything after the first - is unconstrained. A
+  # newline here appends a second line to $GITHUB_OUTPUT.
+  case "$tag" in
+    *[[:space:]]*) printf 'bad image_tag, contains whitespace: %q\n' "$tag" >&2; return 1 ;;
+  esac
 
   [ "${tag%%-*}" = "$talos" ] ||
     { echo "image_tag '${tag}' claims Talos ${tag%%-*}, but this ref declares talos_version=${talos} (kernel ${kver})" >&2; return 1; }
@@ -78,13 +89,25 @@ self_test() {
   bad "production's tag from a v1.13.4 ref rejected" v1.14.0-amt-ct6-mroute
   bad "malformed image_tag rejected"                 not-a-version
   bad "bare version with no suffix rejected"         v1.13.4
+  # Both pass the format glob (* matches whitespace) and the cross-check
+  # (${tag%%-*} is v1.13.4), so only the dedicated guard rejects them.
+  bad "space in image_tag rejected"     'v1.13.4-amt ct6'              "contains whitespace"
+  bad "newline in image_tag rejected"   "$(printf 'v1.13.4-amt\nFOO=x')" "contains whitespace"
+
+  printf '#\n# Linux/x86 6918934 Kernel Configuration\n#\n' > "$d/config"
+  bad "config header matched literally, not as a regex" "" "header disagrees"
+  printf '#\n# Linux/x86 6.18.34 Kernel Configuration\n#\n' > "$d/config"
 
   printf '#\n# Linux/x86 6.18.48 Kernel Configuration\n#\n' > "$d/config"
   bad "Pkgfile/config kernel disagreement rejected" "" "header disagrees"
   printf '#\n# Linux/x86 6.18.34 Kernel Configuration\n#\n' > "$d/config"
 
   printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.13.4   \n' > "$d/Pkgfile"
-  bad "whitespace in talos_version rejected" "" "contains whitespace"
+  # Keyed on the full "talos_version contains whitespace" phrase, not the bare
+  # "contains whitespace": the derived tag inherits the bad value, so the
+  # image_tag guard below rejects this same input and its message would
+  # otherwise satisfy the probe with this guard deleted.
+  bad "whitespace in talos_version rejected" "" "talos_version contains whitespace"
   printf 'vars:\n  linux_version: 6.18.34\n' > "$d/Pkgfile"
   bad "undeclared talos_version rejected" v1.13.4-amt-ct6-mroute "talos_version is not declared"
   printf 'vars:\n  talos_version: v1.13.4\n' > "$d/Pkgfile"
