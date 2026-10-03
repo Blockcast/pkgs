@@ -38,21 +38,37 @@ jobs:
       - name: No version literal in workflow defaults, fallbacks or env blocks
         run: .github/scripts/check-no-version-literal.sh "$SCAN_ROOT"
 
-      - name: Guard actually covers .github/scripts (negative control)
+      - name: Guard actually covers both .github subtrees (negative control)
         # The scan root lives in this file, not in the script, so the script's
-        # own --self-test cannot catch it being narrowed back to
-        # .github/workflows. This step is that mutation's failing test -- it
-        # must read the same SCAN_ROOT as the step above, or narrowing that
-        # value would leave this one passing against a root nobody uses.
+        # own --self-test cannot catch it being narrowed to either subtree.
+        # This step is that mutation's failing test -- it must read the same
+        # SCAN_ROOT as the step above, or narrowing that value would leave this
+        # one passing against a root nobody uses.
+        #
+        # Each probe is planted ALONE, one guard invocation per directory. The
+        # guard fails if *any* literal is in scope, so planting both at once is
+        # an OR, not an AND: narrowing SCAN_ROOT to either subtree would still
+        # red the guard on the surviving probe and this step would stay green.
         run: |
-          trap 'rm -f .github/scripts/_negative_control.sh' EXIT
+          trap 'rm -f .github/scripts/_negative_control.sh .github/workflows/_negative_control.yml' EXIT
           # Held in a lowercase var so this step is not itself a hit: the guard
-          # matches `default:`, `:[-=?]` and `[A-Z_]+[:=]`, none of which a
-          # lowercase assignment trips.
+          # matches `default:`, `:[-=?]` and `[A-Z_]+[:=]`, and neither a
+          # lowercase assignment nor a marker with no digits after it trips.
           ver="v1.13.4"
-          printf 'talos="${talos:-%s}"\n' "$ver" > .github/scripts/_negative_control.sh
-          if .github/scripts/check-no-version-literal.sh "$SCAN_ROOT" >/dev/null 2>&1; then
-            echo "guard passed a version literal planted in .github/scripts" >&2
-            exit 1
-          fi
-          echo "ok: guard catches a literal outside .github/workflows"
+          plant() {
+            printf '%s\n' "$2" > "$1"
+            rc=0
+            .github/scripts/check-no-version-literal.sh "$SCAN_ROOT" >/dev/null 2>&1 || rc=$?
+            rm -f "$1"
+            # rc 1 is "rejected a literal". rc 0 is a narrowed root that no
+            # longer covers $1; rc 2 is a root that does not exist at all.
+            # Asserting 1 rather than just non-zero keeps a typo'd SCAN_ROOT
+            # red here too, instead of reading as a catch.
+            if [ "$rc" -ne 1 ]; then
+              echo "expected the guard to reject a literal in $1 (rc 1), got rc=$rc" >&2
+              exit 1
+            fi
+            echo "ok: guard catches $1"
+          }
+          plant .github/scripts/_negative_control.sh "talos=\"\${talos:-$ver}\""
+          plant .github/workflows/_negative_control.yml "TALOS: $ver"

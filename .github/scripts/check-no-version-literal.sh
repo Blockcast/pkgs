@@ -87,6 +87,17 @@ self_test() {
   probe "description prose"       pass  "        description: 'image tag; defaults to the Pkgfile value'"
   probe "clean workflow"          pass  '    runs-on: ubuntu-latest'
 
+  # A guard that cannot find anything to guard must not report that it found
+  # nothing wrong. probe() cannot reach this -- it always creates its directory
+  # -- so assert it end-to-end. Fails if the dispatch arm's -d check is dropped.
+  rc=0; "$0" "$d/nope" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "ok   missing scan root is an error"
+  else
+    echo "FAIL missing scan root is an error (expected rc 2, got $rc)"
+    fails=$((fails + 1))
+  fi
+
   [ "$fails" -eq 0 ] || { echo "$fails check(s) failed" >&2; return 1; }
   echo "all checks passed"
 }
@@ -100,6 +111,11 @@ case "${1-}" in
     exit 2
     ;;
   *)
+    # `2>/dev/null` in scan() swallows permission noise on a real tree, which
+    # also swallows "no such directory" -- a typo'd root would otherwise report
+    # a clean bill of health. Checked here rather than in scan() so it does not
+    # depend on `set -e` plus exit-through-`$()` to reach the caller.
+    [ -d "$1" ] || { echo "scan root '$1' not found" >&2; exit 2; }
     hits="$(scan "$1" || true)"
     if [ -n "$hits" ]; then
       printf '%s\n' "$hits"
