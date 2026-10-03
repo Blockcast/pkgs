@@ -80,8 +80,9 @@ self_test() {
     if err="$(resolve "$d/Pkgfile" "$d/config" "${2-}" 2>&1 >/dev/null)"; then
       echo "FAIL $1 (expected reject)"; fails=$((fails + 1))
     elif [ -n "${3-}" ] && [ "${err#*"$3"}" = "$err" ]; then
-      # printf, not echo: a probe key containing a backslash escape (\r) is
-      # swallowed by echo, so the diagnostic would read "not for ''".
+      # printf, not echo: echo's handling of backslash escapes is shell-dependent
+      # (zsh and xpg_echo bash swallow the \r in a probe key, bash alone does not),
+      # so the diagnostic is only reliable through printf.
       printf "FAIL %s (rejected, but not for '%s': %s)\n" "$1" "$3" "$err"; fails=$((fails + 1))
     else
       echo "ok   $1"
