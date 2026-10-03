@@ -27,6 +27,14 @@ resolve() {
   talos="$(pkgfile_var talos_version "$pkgfile")"
   [ -n "$kver" ] || { echo "$pkgfile: linux_version is not declared" >&2; return 1; }
   [ -n "$talos" ] || { echo "$pkgfile: talos_version is not declared" >&2; return 1; }
+  # linux_version is hygiene-checked incidentally -- a malformed value stops
+  # matching the config-amd64 header below. talos_version is only ever compared
+  # against a tag derived from itself, so a self-consistent malformation
+  # survives both guards and lands a tag with spaces in $GITHUB_OUTPUT, failing
+  # at docker push after the whole kernel build.
+  case "$talos" in
+    *[[:space:]]*) echo "$pkgfile: talos_version '$talos' contains whitespace" >&2; return 1 ;;
+  esac
 
   grep -q "Linux/x86 ${kver} Kernel Configuration" "$config" ||
     { echo "kernel mismatch: $pkgfile says linux_version=${kver}, $config header disagrees" >&2; return 1; }
@@ -75,6 +83,8 @@ self_test() {
   bad "Pkgfile/config kernel disagreement rejected" "" "header disagrees"
   printf '#\n# Linux/x86 6.18.34 Kernel Configuration\n#\n' > "$d/config"
 
+  printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.13.4   \n' > "$d/Pkgfile"
+  bad "whitespace in talos_version rejected" "" "contains whitespace"
   printf 'vars:\n  linux_version: 6.18.34\n' > "$d/Pkgfile"
   bad "undeclared talos_version rejected" v1.13.4-amt-ct6-mroute "talos_version is not declared"
   printf 'vars:\n  talos_version: v1.13.4\n' > "$d/Pkgfile"
