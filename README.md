@@ -54,21 +54,25 @@ in the *sibling* repo rather than this one — exec-format on v1.13.4).
 Dispatch production builds from `ci/talos-v1.14.0`. See
 [BLO-33964](https://paperclip.blockcast.net/BLO/issues/BLO-33964).
 
-### Kernel-version agreement — NOT yet enforced
+### Kernel-version agreement — enforced by `linux-amt`
 
 `Blockcast/linux-amt` builds the `amt.ko` that must load into this kernel, so the two
-must agree on a kernel version. **Nothing enforces that agreement today.**
+must agree on a kernel version. **That agreement is enforced**, as **surface 8** of
+`kernel/talos-extension/check-kver-drift.sh` in that repo — merged in
+[`Blockcast/linux-amt#255`](https://github.com/Blockcast/linux-amt/pull/255) on
+2026-10-03.
 
-[`Blockcast/linux-amt#255`](https://github.com/Blockcast/linux-amt/pull/255) adds it: a
-`pkgs_ref=` key in `kernel/talos-extension/PRODUCTION_KERNEL` naming the authoritative
-ref above, and a check that fails CI when this repo's `kernel/build/config-amd64` at
-that ref disagrees with the declared fleet kernel. **Until that PR merges, a
-disagreement is caught only at node-load** — which is the failure this document exists
-to warn about.
+Surfaces 1–7 are local to `linux-amt` and only constrain what `amt.ko` is compiled
+against; **8 is the only one that can see this repo**. It reads `pkgs_ref=` from
+`kernel/talos-extension/PRODUCTION_KERNEL` — required, not optional: a missing key is
+`exit 2`, never a silent skip — fetches this repo's `kernel/build/config-amd64` at that
+ref, and fails CI when it disagrees with the declared fleet kernel. Before trusting it,
+run the free negative control the script documents: setting `pkgs_ref=main` must make
+the check fail. "surface 8" is also the search term for finding the right block of that
+268-line script after a red run.
 
-Once it has merged: if you move the authoritative ref, update `pkgs_ref` there in the
-**same** change. Otherwise that check goes red — or worse, keeps passing against a
-stale branch.
+**If you move the authoritative ref, update `pkgs_ref` there in the same change.**
+Otherwise that check goes red — or worse, keeps passing against a stale branch.
 
 ## Upstream: what this repo builds
 
