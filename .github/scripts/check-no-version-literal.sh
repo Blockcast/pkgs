@@ -49,7 +49,16 @@ PATTERN='(default:|:[-=?]|[A-Z_]+[:=]|[A-Za-z_]+=)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+|
 # Tool pins are not fleet versions and are correctly hardcoded. Keep this list
 # short and explicit: adding to it should be a deliberate "is this a Talos or
 # kernel version?" decision, not a reflex to turn the build green.
-ALLOW='CRANE_VER'
+#
+# Entries are matched against the whole name -- the filter below anchors with
+# `[[:space:]]*[:=]`, so an entry must spell a variable's *full* name. A longer
+# name sharing an entry's prefix is NOT covered: `CRANE_VER` does not match
+# `CRANE_VERSION:`, because `SION` sits between the prefix and the `:`. Both
+# names are live here for the same tool (crane), so both are spelled out.
+# Alternate rather than reach for `CRANE_VER[A-Z_]*`: a prefix wildcard would
+# silently adopt any future name starting CRANE_VER, which is exactly the
+# undeliberate widening the paragraph above forbids.
+ALLOW='CRANE_VER|CRANE_VERSION'
 
 # A line that declares its literal is a fixture is exempt. Line-level, not
 # file-level, and that is the whole design: the rest of the file stays scanned.
@@ -172,6 +181,11 @@ self_test() {
 
   # False positives that would red the build on correct code.
   probe "tool pin left alone"     pass  '          CRANE_VER="v0.20.2"'
+  # The same tool under its other live name. $ALLOW is anchored to the end of
+  # the name, so this is NOT covered by the CRANE_VER entry -- it needs its own.
+  # This reds if the CRANE_VERSION alternative is dropped, which is how the
+  # guard went red on main 86s after it landed (BLO-39887).
+  probe "tool pin, longer name"   pass  '          CRANE_VERSION: v0.21.2'
 
   # Pins the BLO-39887 design decision: widening the equals arm to take a colon
   # too reds all 30 of these. If someone does, this goes red first.
