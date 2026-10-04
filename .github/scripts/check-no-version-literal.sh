@@ -12,32 +12,61 @@ set -eu
 # Every form a version literal can come back in:
 #   default:      a workflow_dispatch input default
 #   :[-=?]        ${X:-v}, ${X:=v}, ${X:?v}
-#   [A-Z_]+[:=]   a bare `TAG=v`, an `env:` key, and `${X-v}` via its
+#   [A-Z_]+[:=]   an `env:` key (`TALOS: v1.13.4`), and `${X-v}` via its
 #                 assignment prefix
-# Lowercase `description:` prose is deliberately not matched -- those are
-# examples, not values.
-PATTERN='(default:|:[-=?]|[A-Z_]+[:=])[^#]*v?[0-9]+\.[0-9]+\.[0-9]+'
+#   [A-Za-z_]+=   any bare assignment. Lowercase is the idiom .github/scripts/
+#                 is written in (`local pkgfile=$1 ... kver talos tag`), so an
+#                 uppercase-only arm missed `talos=v1.13.4` and `kver=6.18.34`
+#                 outright -- the clean pass over this subtree was incidental,
+#                 not designed (BLO-39887).
+#   ^<ws>v?N.N.N  a value alone on its line: the YAML block-scalar form,
+#                 `default: >-` with the value on the next line. Approximated
+#                 as "the whole line is a version" rather than by tracking the
+#                 opener, because grep is line-at-a-time. Measured zero false
+#                 positives over .github: every `|`/`>` block here is a
+#                 `run:`/`script:`/`payload:` body, and a bare version alone on
+#                 a line is not a valid command in one.
+#
+# The equals arm is deliberately NOT the wider `[A-Za-z_]+[:=]` (colon too).
+# That reds 30 correct lines, every one a `uses: owner/action@<sha> #
+# version: vX.Y.Z` pin: `[^#]*` only blocks a `#` *after* the marker, and there
+# the marker (`version:`) is itself inside the trailing comment. Those are tool
+# pins, not fleet versions. Lowercase `description:` prose is skipped for the
+# same reason -- examples, not values.
+PATTERN='(default:|:[-=?]|[A-Z_]+[:=]|[A-Za-z_]+=)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+|^[[:space:]"]*v?[0-9]+\.[0-9]+\.[0-9]+'
 
 # Tool pins are not fleet versions and are correctly hardcoded. Keep this list
 # short and explicit: adding to it should be a deliberate "is this a Talos or
 # kernel version?" decision, not a reflex to turn the build green.
 ALLOW='CRANE_VER'
 
+# A line that declares its literal is a fixture is exempt. Line-level, not
+# file-level, and that is the whole design: the rest of the file stays scanned.
+# It matters most in .github/scripts/, where the self-tests holding the
+# fixtures sit in the same file as the production code most likely to grow a
+# real literal -- a file-granular exclusion would blind exactly that.
+#
+# Chosen over the two alternatives in BLO-39887: an --exclude list is too
+# coarse for the reason above, and moving fixtures to sibling testdata files
+# would break the --self-test-in-one-file idiom this repo (and this script) is
+# built on, while only relocating the literals rather than declaring them.
+EXEMPT='#[[:space:]]*version-literal-ok'
+
 # Scans a directory -- not a *.yml glob. 4 of this repo's 10 workflow files are
 # .yaml, including the kres-generated ci.yaml, where a regenerated input default
 # would land. Callers should hand it `.github`, not `.github/workflows`: the
 # version-bearing logic now lives in `.github/scripts/` too.
 #
-# This file is excluded because its own probes below are literals by design.
-# That is the only exclusion; a real literal anywhere else under .github is a
-# hit.
+# This file is excluded wholesale because its own probes below are literals by
+# design. Everywhere else a literal is a hit unless its line carries $EXEMPT.
 scan() {
   # A prose comment *about* a removed literal is not a literal. `[^#]*` in
   # PATTERN only blocks a `#` after the marker, so full-line comments are
   # dropped here.
   grep -rnE "$PATTERN" "$1" --exclude="$(basename "$0")" 2>/dev/null |
     grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
-    grep -vE "($ALLOW)[[:space:]]*[:=]"
+    grep -vE "($ALLOW)[[:space:]]*[:=]" |
+    grep -vE "$EXEMPT"
 }
 
 self_test() {
@@ -67,6 +96,16 @@ self_test() {
   probe "bare assignment"         catch '          TAG=v1.13.4-amt'
   probe "env: block"              catch '      TALOS: v1.13.4'
 
+  # BLO-39887: lowercase is the idiom .github/scripts/ is written in, so these
+  # two were the live hole -- the uppercase-only arm skipped them outright.
+  probe "lowercase bare assignment" catch '          talos=v1.13.4' c.sh
+  probe "lowercase, no v prefix"    catch '          kver=6.18.34' c.sh
+
+  # The block-scalar form: the opener carries no version, so this is caught by
+  # the whole-line arm on the continuation, not by the `default:` arm.
+  probe "block-scalar continuation" catch '    default: >-
+      v1.13.4'
+
   # Scanning the directory rather than *.yml: this fails if the glob comes back.
   probe "literal in a .yaml file" catch "    default: 'v1.13.4'" b.yaml
 
@@ -82,6 +121,21 @@ self_test() {
 
   # False positives that would red the build on correct code.
   probe "tool pin left alone"     pass  '          CRANE_VER="v0.20.2"'
+
+  # Pins the BLO-39887 design decision: widening the equals arm to take a colon
+  # too reds all 30 of these. If someone does, this goes red first.
+  probe "pinned action trailing comment" pass \
+    '      uses: owner/action@0f1e2d3c4b5a # version: v1.4.0'
+
+  # The fixture-exemption mechanism. A declared literal is skipped...
+  probe "declared fixture exempt"  pass \
+    '          ver="v1.13.4" # version-literal-ok' c.sh
+  # ...and only on its own line. Fails if the marker ever goes file-scoped.
+  # The unmarked line uses the *uppercase* form on purpose, so this probe
+  # tests EXEMPT alone and does not also depend on the new lowercase arm.
+  probe "marker exempts only its line" catch \
+    '          ver="v1.13.4" # version-literal-ok
+          TAG=v1.13.4' c.sh
   probe "prose comment about a removed default" pass \
     '          # the old default: v1.13.4 was removed in BLO-39684'
   probe "description prose"       pass  "        description: 'image tag; defaults to the Pkgfile value'"
