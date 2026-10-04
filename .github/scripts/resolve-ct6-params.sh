@@ -97,7 +97,7 @@ self_test() {
   }
 
   ok  "empty image_tag derives from talos_version"
-  [ "$(resolve "$d/Pkgfile" "$d/config" | sed -n 's/^image_tag=//p')" = "v1.13.4-amt-ct6-mroute" ] ||
+  [ "$(resolve "$d/Pkgfile" "$d/config" | sed -n 's/^image_tag=//p')" = "v1.13.4-amt-ct6-mroute" ] || # version-literal-ok
     { echo "FAIL derived tag is not v1.13.4-amt-ct6-mroute"; fails=$((fails + 1)); }
   ok  "matching image_tag accepted"                  v1.13.4-amt-ct6-mroute
   # The regression this guard exists for: passes the old format-only check.
@@ -143,7 +143,7 @@ self_test() {
   # non-fixpoint from coming back rather than evidence of a live case.
   printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.14.0-alpha.0\n' > "$d/Pkgfile"
   ok  "pre-release talos_version derives and passes its own cross-check"
-  [ "$(resolve "$d/Pkgfile" "$d/config" | sed -n 's/^image_tag=//p')" = "v1.14.0-alpha.0-amt-ct6-mroute" ] ||
+  [ "$(resolve "$d/Pkgfile" "$d/config" | sed -n 's/^image_tag=//p')" = "v1.14.0-alpha.0-amt-ct6-mroute" ] || # version-literal-ok
     { echo "FAIL derived tag drops the pre-release suffix"; fails=$((fails + 1)); }
   ok  "matching pre-release image_tag accepted"      v1.14.0-alpha.0-amt-ct6-mroute
   # The prefix test must still discriminate, or replacing the cross-check with
