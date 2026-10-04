@@ -27,6 +27,17 @@ set -eu
 #                 `run:`/`script:`/`payload:` body, and a bare version alone on
 #                 a line is not a valid command in one.
 #
+# KNOWN FALSE POSITIVE: a dotted quad. `group=239.1.1.1`, `src=10.0.0.1`,
+# `10.244.0.0/16` and the date `2026.10.04` all match -- N.N.N is a prefix of
+# N.N.N.N, and the equals and whole-line arms cannot tell an address from a
+# version. Zero of these exist under .github today, which is why the scan is
+# clean, but this is a multicast repo and `group=`/`src=`/`subnet=` is the
+# idiomatic lowercase assignment in exactly the .github/scripts/ subtree now in
+# scope. Not narrowed, because every narrowing (reject a 4th component, require
+# a `v`) also drops a real reintroduction form; the $EXEMPT hatch absorbs it
+# and the failure message names the hatch. Pinned by a probe so it is a
+# measured limit rather than something rediscovered at red-build time.
+#
 # The equals arm is deliberately NOT the wider `[A-Za-z_]+[:=]` (colon too).
 # That reds 30 correct lines, every one a `uses: owner/action@<sha> #
 # version: vX.Y.Z` pin: `[^#]*` only blocks a `#` *after* the marker, and there
@@ -50,6 +61,13 @@ ALLOW='CRANE_VER'
 # coarse for the reason above, and moving fixtures to sibling testdata files
 # would break the --self-test-in-one-file idiom this repo (and this script) is
 # built on, while only relocating the literals rather than declaring them.
+#
+# Unlike $ALLOW this hatch is decentralized -- any line in any file can opt
+# itself out, and the only control is that the diff shows it. So adding one is
+# the same deliberate "is this a Talos or kernel version?" decision, not a
+# reflex to turn the build green. A `default:` line is carved out of the hatch
+# below: that is the exact surface this guard was written for (BLO-39684), and
+# a marker there would re-open it with one trailing comment.
 EXEMPT='#[[:space:]]*version-literal-ok'
 
 # Scans a directory -- not a *.yml glob. 4 of this repo's 10 workflow files are
@@ -66,7 +84,12 @@ scan() {
   grep -rnE "$PATTERN" "$1" --exclude="$(basename "$0")" 2>/dev/null |
     grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
     grep -vE "($ALLOW)[[:space:]]*[:=]" |
-    grep -vE "$EXEMPT"
+    # "drop $EXEMPT lines unless they are a `default:`" needs a negative
+    # lookahead, which ERE has not; awk is the one stage that can express it.
+    # `grep .` is load-bearing -- awk always exits 0, and callers read scan's
+    # exit status to mean "found something".
+    awk '!/'"$EXEMPT"'/ || /default:/' |
+    grep .
 }
 
 self_test() {
@@ -136,6 +159,17 @@ self_test() {
   probe "marker exempts only its line" catch \
     '          ver="v1.13.4" # version-literal-ok
           TAG=v1.13.4' c.sh
+  # ...and never on a `default:`, the surface BLO-39684 was about. Fails if the
+  # `|| /default:/` carve-out is dropped, which would let one trailing comment
+  # re-open exactly what this guard exists to catch.
+  probe "default: cannot be exempted" catch \
+    "    default: 'v1.13.4' # version-literal-ok"
+  # A measured limit, not an aspiration: N.N.N is a prefix of N.N.N.N, so an
+  # address reads as a version. Declared here so the shape is known rather than
+  # rediscovered on a red build. Goes red if the arms are ever narrowed -- at
+  # which point delete this probe, do not re-widen to keep it green.
+  probe "dotted quad is a known false positive" catch \
+    '          group=239.1.1.1' c.sh
   probe "prose comment about a removed default" pass \
     '          # the old default: v1.13.4 was removed in BLO-39684'
   probe "description prose"       pass  "        description: 'image tag; defaults to the Pkgfile value'"
@@ -173,7 +207,7 @@ case "${1-}" in
     hits="$(scan "$1" || true)"
     if [ -n "$hits" ]; then
       printf '%s\n' "$hits"
-      echo "^^ version literal above; declare it in Pkgfile and derive it (BLO-39684)" >&2
+      echo "^^ version literal above; declare it in Pkgfile and derive it (BLO-39684). A genuine test fixture can declare itself with a trailing '# version-literal-ok' -- except on a 'default:' line, which is the surface this guard exists for." >&2
       exit 1
     fi
     echo "no version literals in workflow defaults, fallbacks or env blocks"
