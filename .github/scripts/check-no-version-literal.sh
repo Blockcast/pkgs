@@ -94,13 +94,22 @@ scan() {
     #   in the value would otherwise be a parse error, awk would die, `grep .`
     #   would see empty input and the scan would report a clean bill of health.
     #   A guard that fails open is worse than no guard.
-    # - the carve-out is anchored to the key position of grep -rn's
-    #   `path:line:content` output, which the comment filter at :85 already
-    #   assumes. Unanchored, `default:` anywhere on the line cancels the hatch
-    #   -- including inside a plant payload, or in the prose explaining the
-    #   exemption itself -- and the message then names a surface that is not
-    #   there.
-    awk -v ex="$EXEMPT" '$0 !~ ex || /^[^:]*:[0-9]+:[[:space:]]*default:/' |
+    # - the carve-out matches the `:line:` field of grep -rn's
+    #   `path:line:content` output, not a bare `default:`. Without that,
+    #   `default:` anywhere on the line cancels the hatch -- including inside a
+    #   plant payload, or in the prose explaining the exemption itself -- and
+    #   the message then names a surface that is not there.
+    #
+    #   It is deliberately *not* `^`-anchored. `^[^:]*` cannot cross a colon,
+    #   so a path containing one (`.github/a:b.yml`) slides `[0-9]+` onto the
+    #   filename, the carve-out misses, and the line stays exempt: a `default:`
+    #   literal silently waved through. Unanchored, the same path instead
+    #   cancels its own marker -- a false positive, which is loud. The comment
+    #   filter at :85 assumes the same output shape but is a *drop* filter, so
+    #   it already fails in that safe direction; this stage had to be made to.
+    #   Cost of the trade: a payload literally containing `:1: default:`
+    #   cancels its own marker too. Fail-closed, so it stays.
+    awk -v ex="$EXEMPT" '$0 !~ ex || /:[0-9]+:[[:space:]]*default:/' |
     grep .
 }
 
@@ -184,6 +193,13 @@ self_test() {
     '          plant a.yml "default: v1.13.4" # version-literal-ok' c.sh
   probe "default: in the exemption prose stays exempt" pass \
     '          TAG=v1.13.4 # version-literal-ok, replaces the old default:' c.sh
+  # A colon in the *path* must not buy an exemption. `^[^:]*` cannot cross one,
+  # so an anchored carve-out slides onto the filename, misses, and waves the
+  # literal through -- silently, over the exact surface this guard exists for.
+  # Unanchored it over-catches instead, which is loud. Fails if `^[^:]*` is
+  # restored to the carve-out.
+  probe "colon in the path cannot buy an exemption" catch \
+    "    default: 'v1.13.4' # version-literal-ok" 'a:b.yml'
   # A measured limit, not an aspiration: N.N.N is a prefix of N.N.N.N, so an
   # address reads as a version. Declared here so the shape is known rather than
   # rediscovered on a red build. Goes red if the arms are ever narrowed -- at
@@ -202,11 +218,11 @@ self_test() {
   # Fails if `-v ex=` is reverted to the interpolated form.
   rm -f "$d"/*
   printf '%s\n' "    default: 'v1.13.4'" > "$d/a.yml"
-  rc=0; ( EXEMPT='#[[:space:]]*version-literal-ok/x'; scan "$d" >/dev/null 2>&1 ) || rc=$?
+  rc=0; ( EXEMPT='#[[:space:]]*version-literal-ok/x'; scan "$d" >/dev/null ) || rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "ok   a slash in \$EXEMPT does not zero the guard"
   else
-    echo "FAIL a slash in \$EXEMPT does not zero the guard (scan found nothing)"
+    echo "FAIL a slash in \$EXEMPT does not zero the guard (awk likely died; scan found nothing -- its diagnostic is above)"
     fails=$((fails + 1))
   fi
 
