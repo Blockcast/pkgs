@@ -1,8 +1,17 @@
 ---
-# ⚠ `make rekres` OVERWRITES .github/workflows/weekly.yaml AND WILL DROP TWO
-# HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE. Re-apply both after running it:
-#   1. `runs-on: pkgs-public`   (kres emits `group: pkgs`) — BLO-21948
-#   2. `timeout-minutes: 960`   on the `reproducibility` job — BLO-37661
+# ⚠ `make rekres` OVERWRITES .github/workflows/weekly.yaml AND .github/workflows/
+# ci.yaml AND WILL DROP THREE HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
+# Re-apply all three after running it:
+#   1. weekly.yaml: `runs-on: pkgs-public`  (kres emits `group: pkgs`) — BLO-21948
+#   2. weekly.yaml: `timeout-minutes: 960`  on `reproducibility` — BLO-37661
+#   3. ci.yaml: `"on"` REDUCED to `workflow_dispatch: {}` — the `push` and
+#      `pull_request` triggers are deliberately removed — BLO-37063.
+#      Both ci.yaml jobs are `runs-on: pkgs`, a runner group with
+#      allows_public_repositories=false, and this repo is public: 52 runs,
+#      zero success, no job ever assigned a runner. Re-adding the triggers
+#      without first fixing the runner route re-creates a permanently-queued
+#      `default` check that blocks every PR in the repo. See the marked
+#      comment at the top of ci.yaml.
 # Neither has a spec field: kres builds that job as a Go literal with no
 # TimeoutMinutes and no runner override (siderolabs/kres
 # internal/project/pkgfile/build.go, the weekly Workflow in CompileGitHubWorkflow).

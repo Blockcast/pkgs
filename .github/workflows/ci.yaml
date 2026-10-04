@@ -5,17 +5,25 @@
 concurrency:
   group: ${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
+# BLO-37063: HAND-EDITED, kres has no knob for this -- see .kres.yaml.
+# The `push` and `pull_request` triggers were REMOVED. Both jobs below are
+# `runs-on: pkgs`, an org runner group with allows_public_repositories=false;
+# Blockcast/pkgs is public, so GitHub accepts the job, never assigns a runner,
+# and reaps it at the 24h per-job ceiling. Measured over the full retained
+# window: 52 runs, 40 cancelled / 10 failure / 2 queued, ZERO success, and no
+# job assigned a runner anywhere in it. The permanently-`queued` `default`
+# check was additionally an unsatisfiable merge STOP on every PR in this repo.
+# Every function this workflow nominally provided is served elsewhere and
+# green: build-ct6-mroute-kernel.yml (production kernel), build-amt-installer
+# .yml + compose-signed-installer.yml (installer), weekly.yaml on pkgs-public
+# (reproducibility). The one thing genuinely given up is `make PUSH=true` to
+# ghcr on main/tags, which has never executed here.
+# Restore the triggers only together with a runner route that can actually be
+# assigned -- see BLO-37063 for why routes via runner groups 6/14/20/22 are
+# closed and why ubuntu-latest is structurally impossible (the buildx step is
+# driver: remote against cluster-internal DNS).
 "on":
-  push:
-    branches:
-      - main
-      - release-*
-    tags:
-      - v*
-  pull_request:
-    branches:
-      - main
-      - release-*
+  workflow_dispatch: {}
 name: default
 jobs:
   default:
