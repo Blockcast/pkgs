@@ -1,0 +1,74 @@
+# Cheap guard for the kernel-build params. Runs on every PR so the version
+# literals deleted in BLO-39684 cannot come back: a workflow_dispatch default
+# that pins a Talos/kernel version is a drift surface by construction, and this
+# repo shipped stale defaults for two Talos minors after the fleet moved on.
+name: check-build-params
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+jobs:
+  check:
+    # Deliberately NOT the self-hosted `pkgs` label: that queue is shared with
+    # the kernel builds, where a `default` run can sit ~2h. A guard that reports
+    # after the review is over is not a guard. These steps are checkout + shell.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # `.github`, not `.github/workflows`: the version-bearing logic lives in
+      # .github/scripts/ now, and scanning only the workflows dir left the
+      # resolver unguarded. Single-sourced so the negative control below
+      # exercises the same root the real check does.
+      SCAN_ROOT: .github
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolver self-test
+        run: .github/scripts/resolve-ct6-params.sh --self-test
+
+      - name: Resolve against this ref for real
+        run: .github/scripts/resolve-ct6-params.sh Pkgfile kernel/build/config-amd64
+
+      - name: No-version-literal guard self-test
+        run: .github/scripts/check-no-version-literal.sh --self-test
+
+      - name: No version literal in workflow defaults, fallbacks or env blocks
+        run: .github/scripts/check-no-version-literal.sh "$SCAN_ROOT"
+
+      - name: Guard actually covers both .github subtrees (negative control)
+        # The scan root lives in this file, not in the script, so the script's
+        # own --self-test cannot catch it being narrowed to either subtree.
+        # This step is that mutation's failing test -- it must read the same
+        # SCAN_ROOT as the step above, or narrowing that value would leave this
+        # one passing against a root nobody uses.
+        #
+        # Each probe is planted ALONE, one guard invocation per directory. The
+        # guard fails if *any* literal is in scope, so planting both at once is
+        # an OR, not an AND: narrowing SCAN_ROOT to either subtree would still
+        # red the guard on the surviving probe and this step would stay green.
+        run: |
+          trap 'rm -f .github/scripts/_negative_control.sh .github/workflows/_negative_control.yml' EXIT
+          # This step's own probe payload. It used to dodge the guard by being
+          # a lowercase assignment, which the guard did not match -- that hole
+          # is closed (BLO-39887), so it now declares itself instead.
+          ver="v1.13.4" # version-literal-ok
+          plant() {
+            printf '%s\n' "$2" > "$1"
+            rc=0
+            .github/scripts/check-no-version-literal.sh "$SCAN_ROOT" >/dev/null 2>&1 || rc=$?
+            rm -f "$1"
+            # rc 1 is "rejected a literal". rc 0 is a narrowed root that no
+            # longer covers $1; rc 2 is a root that does not exist at all.
+            # Asserting 1 rather than just non-zero keeps a typo'd SCAN_ROOT
+            # red here too, instead of reading as a catch.
+            if [ "$rc" -ne 1 ]; then
+              echo "expected the guard to reject a literal in $1 (rc 1), got rc=$rc" >&2
+              exit 1
+            fi
+            echo "ok: guard catches $1"
+          }
+          plant .github/scripts/_negative_control.sh "talos=\"\${talos:-$ver}\""
+          plant .github/workflows/_negative_control.yml "TALOS: $ver"
