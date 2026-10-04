@@ -1,7 +1,7 @@
 ---
 # ⚠ `make rekres` OVERWRITES .github/workflows/weekly.yaml AND .github/workflows/
-# ci.yaml AND WILL DROP FOUR HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
-# Re-apply all four after running it:
+# ci.yaml AND WILL DROP FIVE HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
+# Re-apply all five after running it:
 #   1. weekly.yaml: `runs-on: pkgs-public`  (kres emits `group: pkgs`) — BLO-21948
 #   2. weekly.yaml: `timeout-minutes: 960`  on `reproducibility` — BLO-37661
 #   3. ci.yaml: `"on"` REDUCED to `workflow_dispatch: {}` — the `push` and
@@ -15,11 +15,19 @@
 #      comment at the top of ci.yaml.
 #   4. ci.yaml: the three publish steps (`Login to registry`, `Push to
 #      registry`, `Push nonfree`) carry an added
-#      `&& (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))`
+#      `&& (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))`
 #      — BLO-37063. kres gates them on `github.event_name != 'pull_request'`
 #      alone, which under the workflow_dispatch-only trigger from (3) means a
 #      dispatch against ANY branch would run `make PUSH=true` to ghcr with the
-#      build and `check-dirty` steps skipped. Keep (3) and (4) together.
+#      build and `check-dirty` steps skipped. `refs/tags/v` matches the removed
+#      trigger's `tags: [v*]`; a bare `refs/tags/` would widen it to any tag.
+#   5. ci.yaml: `release-notes` and `Release` carry
+#      `startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'`
+#      -- BLO-37063. kres emits the bare `startsWith(github.ref, 'refs/tags/')`,
+#      which under the workflow_dispatch-only trigger from (3) lets a dispatch
+#      against any tag run `make release-notes` and softprops/action-gh-release
+#      under `contents: write` with the build and `check-dirty` steps skipped.
+#      Keep (3), (4) and (5) together.
 # Neither has a spec field: kres builds that job as a Go literal with no
 # TimeoutMinutes and no runner override (siderolabs/kres
 # internal/project/pkgfile/build.go, the weekly Workflow in CompileGitHubWorkflow).

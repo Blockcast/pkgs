@@ -21,15 +21,30 @@ concurrency:
 # green: build-ct6-mroute-kernel.yml (production kernel), build-amt-installer
 # .yml + compose-signed-installer.yml (installer), weekly.yaml on pkgs-public
 # (reproducibility).
-# NOTE on what `workflow_dispatch` still reaches: every build/verify step is
-# gated `github.event_name == 'pull_request'` and so is SKIPPED under dispatch,
-# while the three publish steps are gated `!= 'pull_request'` and therefore DO
-# fire. So `make PUSH=true` is not retired by this change -- it moves from
-# automatic-on-main/tags to manual-dispatch-only. The three publish steps now
-# additionally require `github.ref` to be main or a tag, so a dispatch against
-# an arbitrary branch cannot publish images to ghcr with no build or
-# `check-dirty` in front of it. (Inert while no runner can be assigned; this
-# comment is the restore-condition record, so it has to be true in advance.)
+# NOTE on what `workflow_dispatch` still reaches. This is the complete list,
+# step by step, because this comment is the restore-condition record:
+#   - The ungated setup steps (system info, checkout, unshallow, buildx setup)
+#     and `Retrieve PR labels`, which returns "[]" off a pull_request, run.
+#     None has a side effect outside the runner.
+#   - Every build/verify step (`Build`, `Build nonfree`, `kernel-olddefconfig`,
+#     `check-dirty`) is gated `github.event_name == 'pull_request'` and is
+#     SKIPPED.
+#   - The three publish steps (`Login to registry`, `Push to registry`,
+#     `Push nonfree`) are gated `!= 'pull_request'` and therefore DO fire, but
+#     only when `github.ref` is main or a `v*` tag. That is a subset of the
+#     removed `push` trigger's refs, which also covered `release-*` branches.
+#     A dispatch against any other ref cannot publish images to ghcr with no
+#     build or `check-dirty` in front of it. So `make PUSH=true` is not retired
+#     by this change -- it moves from automatic-on-main/tags to
+#     manual-dispatch-only.
+#   - `release-notes` and `Release` additionally require
+#     `github.event_name != 'workflow_dispatch'`, so they never fire under
+#     dispatch: no draft release can be cut, under `contents: write`, from a
+#     tree this run never built or verified.
+#   - The `reproducibility` job is skipped: it needs the
+#     `integration/reproducibility` PR label and the labels output is "[]".
+# (Inert while no runner can be assigned; this comment is the restore-condition
+# record, so it has to be true in advance.)
 # Restore the triggers only together with a runner route that can actually be
 # assigned -- see BLO-37063 for why routes via runner groups 6/14/20/22 are
 # closed and why ubuntu-latest is structurally impossible (the buildx step is
@@ -100,18 +115,18 @@ jobs:
       - name: Login to registry
         # BLO-37063: ref guard added by hand -- under the retained
         # workflow_dispatch trigger this step is reachable on ANY ref.
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # version: v4.2.0
         with:
           password: ${{ secrets.GITHUB_TOKEN }}
           registry: ghcr.io
           username: ${{ github.repository_owner }}
       - name: Push to registry
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: |
           make  PUSH=true
       - name: Push nonfree
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: |
           make nonfree PUSH=true
       - name: Retrieve PR labels
@@ -138,11 +153,13 @@ jobs:
         run: |
           make check-dirty
       - name: release-notes
-        if: startsWith(github.ref, 'refs/tags/')
+        # BLO-37063: dispatch guard added by hand -- see the NOTE at the top.
+        if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
         run: |
           make release-notes
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/')
+        # BLO-37063: dispatch guard added by hand -- see the NOTE at the top.
+        if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # version: v3.0.0
         with:
           body_path: _out/RELEASE_NOTES.md
