@@ -109,7 +109,14 @@ scan() {
     #   it already fails in that safe direction; this stage had to be made to.
     #   Cost of the trade: a payload literally containing `:1: default:`
     #   cancels its own marker too. Fail-closed, so it stays.
-    awk -v ex="$EXEMPT" '$0 !~ ex || /:[0-9]+:[[:space:]]*default:/' |
+    #
+    # - `-?` covers the YAML sequence-item form. `- default:` is a PATTERN hit,
+    #   so the guard already calls it in scope; without `-?` the carve-out did
+    #   not, and the one key the carve-out exists to protect was the one a
+    #   marker could re-open. Not a BLO-39684 surface -- `workflow_dispatch`
+    #   and `workflow_call` inputs are mapping keys, never sequence items --
+    #   but an internal inconsistency in a hatch is worth a character.
+    awk -v ex="$EXEMPT" '$0 !~ ex || /:[0-9]+:[[:space:]]*-?[[:space:]]*default:/' |
     grep .
 }
 
@@ -185,6 +192,12 @@ self_test() {
   # re-open exactly what this guard exists to catch.
   probe "default: cannot be exempted" catch \
     "    default: 'v1.13.4' # version-literal-ok"
+  # ...including as a YAML sequence item. The guard flags `- default:` as in
+  # scope, so the hatch must refuse it too, or the one key carved out of the
+  # hatch is re-openable by writing it one character differently. Fails if
+  # `-?[[:space:]]*` is dropped from the carve-out.
+  probe "- default: cannot be exempted either" catch \
+    "    - default: 'v1.13.4' # version-literal-ok"
   # ...where "a `default:`" means the key, not the substring. Both of these
   # carry `default:` somewhere on the line and neither is a workflow default;
   # the second is the one that will actually bite, since explaining your own
