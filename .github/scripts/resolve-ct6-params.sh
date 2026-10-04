@@ -58,8 +58,15 @@ resolve() {
     *[[:space:]]*) printf 'bad image_tag, contains whitespace: %q\n' "$tag" >&2; return 1 ;;
   esac
 
-  [ "${tag%%-*}" = "$talos" ] ||
-    { echo "image_tag '${tag}' claims Talos ${tag%%-*}, but this ref declares talos_version=${talos} (kernel ${kver})" >&2; return 1; }
+  # Prefix test rather than [ "${tag%%-*}" = "$talos" ]: talos_version may
+  # itself contain a hyphen (v1.14.0-alpha.0), and truncating at the first one
+  # made this reject the tag it had just derived from $talos at :51 -- the
+  # derive-then-cross-check path was not a fixpoint. "$talos" is quoted, so its
+  # own characters stay literal in the pattern and only the trailing -* globs.
+  case "$tag" in
+    "$talos"-*) : ;;
+    *) echo "image_tag '${tag}' does not name this ref's talos_version=${talos} (kernel ${kver})" >&2; return 1 ;;
+  esac
 
   printf 'image_tag=%s\nkver=%s\ntalos=%s\n' "$tag" "$kver" "$talos"
 }
@@ -128,6 +135,25 @@ self_test() {
   bad "undeclared talos_version rejected" v1.13.4-amt-ct6-mroute "talos_version is not declared"
   printf 'vars:\n  talos_version: v1.13.4\n' > "$d/Pkgfile"
   bad "undeclared linux_version rejected" v1.13.4-amt-ct6-mroute "linux_version is not declared"
+
+  # A hyphenated talos_version: Talos ships v1.14.0-alpha.N / -beta.N, and
+  # truncating the derived tag at its first hyphen made the cross-check reject
+  # the tag this script had just derived itself. There is no such row in
+  # Pkgfile history on any branch, so this is the probe that keeps the
+  # non-fixpoint from coming back rather than evidence of a live case.
+  printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.14.0-alpha.0\n' > "$d/Pkgfile"
+  ok  "pre-release talos_version derives and passes its own cross-check"
+  [ "$(resolve "$d/Pkgfile" "$d/config" | sed -n 's/^image_tag=//p')" = "v1.14.0-alpha.0-amt-ct6-mroute" ] ||
+    { echo "FAIL derived tag drops the pre-release suffix"; fails=$((fails + 1)); }
+  ok  "matching pre-release image_tag accepted"      v1.14.0-alpha.0-amt-ct6-mroute
+  # The prefix test must still discriminate, or replacing the cross-check with
+  # `:` would pass the suite: both of these are prefix-mismatches of the alpha
+  # declaration. (A pre-release *tag* on a GA ref stays accepted -- "v1.14.0"-*
+  # matches v1.14.0-alpha.0-amt-... -- exactly as the old ${tag%%-*} equality
+  # accepted it. Unchanged behaviour, so not asserted here.)
+  bad "GA tag from a pre-release ref rejected"       v1.14.0-amt-ct6-mroute
+  bad "other-minor tag from a pre-release ref rejected" v1.13.4-amt-ct6-mroute
+  printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.13.4\n' > "$d/Pkgfile"
 
   [ "$fails" -eq 0 ] || { echo "$fails check(s) failed" >&2; return 1; }
   echo "all checks passed"

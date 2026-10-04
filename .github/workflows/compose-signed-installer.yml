@@ -110,6 +110,23 @@ jobs:
                 *) echo "base_installer tag '${BASE_TAG}' is not <version>-<variant>" >&2; exit 1 ;;
               esac
               : "${IMAGER:=ghcr.io/blockcast/imager:${BASE_TAG}}"
+              # Deriving EXT is the one place this workflow has to split
+              # <version>-<variant>, and that split is only unambiguous when the
+              # tag carries exactly one hyphen. With two or more, both readings
+              # are defensible and silently wrong in opposite directions:
+              # ${BASE_TAG%%-*} pairs the GA extension amt-kmod:v1.14.0 with a
+              # v1.14.0-alpha.0-amt base, while ${BASE_TAG%-*} mis-derives
+              # amt-kmod:v1.13.4-amt-ct6 from the v1.13.4-amt-ct6-mroute tag the
+              # glob above admits. Unlike the resolver, this workflow has no
+              # Pkgfile to cross-check against -- base_installer is the only
+              # version it is told -- so it refuses to guess on the *signed*
+              # publishing path. Only the derivation is constrained: pass the
+              # `extension` input and any tag shape works.
+              if [ -z "${EXT:-}" ]; then
+                case "${BASE_TAG#*-}" in
+                  *-*) echo "cannot derive the extension from base_installer tag '${BASE_TAG}': <version>-<variant> is ambiguous with more than one hyphen; pass the extension input explicitly" >&2; exit 1 ;;
+                esac
+              fi
               : "${EXT:=ghcr.io/blockcast/amt-kmod:${BASE_TAG%%-*}}"
               : "${OUT:=${BASE}-signed}"
               ;;
