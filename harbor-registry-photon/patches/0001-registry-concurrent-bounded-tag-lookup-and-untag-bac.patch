@@ -1,0 +1,1243 @@
+From ee27c2e9ffd07bb91d95a3972dc9d8f889d0552d Mon Sep 17 00:00:00 2001
+From: Players Engineer <omar@blockcast.network>
+Date: Sun, 4 Oct 2026 21:04:50 +0300
+Subject: [PATCH] registry: concurrent bounded tag lookup and untag (backport
+ a2afe23f38)
+
+Backport of distribution/distribution a2afe23f386e827d1975530aab12010f0be2a774
+("add concurrency limits for tag lookup and untag", Liang Zheng) onto
+goharbor/distribution 0c62ec3ec8df7ea91c819448236a67f0777f929f, the
+revision Harbor v2.14.0 ships as registry_DO_NOT_USE_GC.
+
+tagStore.Lookup listed every tag in the repository and read each
+current/link serially. DeleteManifest calls it on every manifest delete,
+so Harbor GC cost per manifest grew linearly with the repository's tag
+count times the storage backend's per-object round trip.
+
+- tagStore.Lookup reads tag links through an errgroup bounded by the
+  tag store's concurrencyLimit; the first non-PathNotFound error cancels
+  the remaining reads and fails the lookup (no partial result).
+- DeleteManifest untags the referencing tags through an errgroup bounded
+  by storage.DefaultConcurrencyLimit.
+- New RegistryOption TagLookupConcurrencyLimit and config key
+  storage.tag.concurrencylimit (must be a non-negative int; NewApp
+  panics otherwise, exactly as upstream). Unset or 0 means
+  runtime.GOMAXPROCS(0).
+- Vendors golang.org/x/sync/errgroup at v0.3.0 (93782cc8), the version
+  upstream's go.mod pinned at a2afe23f38, recorded in vendor.conf.
+
+Deviation from upstream: upstream DeleteManifest assigns the collected
+Untag errors to imh.Errors and then writes 202 Accepted anyway. This
+backport keeps the pre-existing fail-closed behaviour instead: if any
+Untag fails, the handler returns the errors without writing 202.
+
+Upstream's example config files set concurrencylimit: 8; they are not
+changed here so the default stays GOMAXPROCS, as documented.
+
+Tests: upstream configuration test ported; new storage tests compare the
+concurrent Lookup with the verbatim serial algorithm over many tags with
+missing links, prove the read concurrency reaches and never exceeds the
+limit, and check error propagation; new handler tests cover the config
+validation, multi-tag untag on DELETE, and the fail-closed 202 deviation.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ configuration/configuration.go                |  17 +
+ configuration/configuration_test.go           |   8 +
+ docs/configuration.md                         |  22 ++
+ registry/handlers/app.go                      |  15 +
+ registry/handlers/manifests.go                |  34 +-
+ registry/handlers/tag_concurrency_test.go     | 188 ++++++++++
+ registry/storage/registry.go                  |  22 +-
+ registry/storage/tagstore.go                  |  62 +++-
+ registry/storage/tagstore_concurrency_test.go | 331 ++++++++++++++++++
+ vendor.conf                                   |   1 +
+ vendor/golang.org/x/sync/LICENSE              |  27 ++
+ vendor/golang.org/x/sync/PATENTS              |  22 ++
+ vendor/golang.org/x/sync/README.md            |  20 ++
+ vendor/golang.org/x/sync/errgroup/errgroup.go | 132 +++++++
+ vendor/golang.org/x/sync/errgroup/go120.go    |  14 +
+ .../golang.org/x/sync/errgroup/pre_go120.go   |  15 +
+ 16 files changed, 906 insertions(+), 24 deletions(-)
+ create mode 100644 registry/handlers/tag_concurrency_test.go
+ create mode 100644 registry/storage/tagstore_concurrency_test.go
+ create mode 100644 vendor/golang.org/x/sync/LICENSE
+ create mode 100644 vendor/golang.org/x/sync/PATENTS
+ create mode 100644 vendor/golang.org/x/sync/README.md
+ create mode 100644 vendor/golang.org/x/sync/errgroup/errgroup.go
+ create mode 100644 vendor/golang.org/x/sync/errgroup/go120.go
+ create mode 100644 vendor/golang.org/x/sync/errgroup/pre_go120.go
+
+diff --git a/configuration/configuration.go b/configuration/configuration.go
+index c06aa21c..ae653000 100644
+--- a/configuration/configuration.go
++++ b/configuration/configuration.go
+@@ -438,6 +438,8 @@ func (storage Storage) Type() string {
+ 			// allow configuration of delete
+ 		case "redirect":
+ 			// allow configuration of redirect
++		case "tag":
++			// allow configuration of tag
+ 		default:
+ 			storageType = append(storageType, k)
+ 		}
+@@ -451,6 +453,19 @@ func (storage Storage) Type() string {
+ 	return ""
+ }
+ 
++// TagParameters returns the Parameters map for a Storage tag configuration
++func (storage Storage) TagParameters() Parameters {
++	return storage["tag"]
++}
++
++// setTagParameter changes the parameter at the provided key to the new value
++func (storage Storage) setTagParameter(key string, value interface{}) {
++	if _, ok := storage["tag"]; !ok {
++		storage["tag"] = make(Parameters)
++	}
++	storage["tag"][key] = value
++}
++
+ // Parameters returns the Parameters map for a Storage configuration
+ func (storage Storage) Parameters() Parameters {
+ 	return storage[storage.Type()]
+@@ -479,6 +494,8 @@ func (storage *Storage) UnmarshalYAML(unmarshal func(interface{}) error) error {
+ 					// allow configuration of delete
+ 				case "redirect":
+ 					// allow configuration of redirect
++				case "tag":
++					// allow configuration of tag
+ 				default:
+ 					types = append(types, k)
+ 				}
+diff --git a/configuration/configuration_test.go b/configuration/configuration_test.go
+index 48cc9980..d0299ed1 100644
+--- a/configuration/configuration_test.go
++++ b/configuration/configuration_test.go
+@@ -43,6 +43,9 @@ var configStruct = Configuration{
+ 			"host":          nil,
+ 			"port":          42,
+ 		},
++		"tag": Parameters{
++			"concurrencylimit": 10,
++		},
+ 	},
+ 	Auth: Auth{
+ 		"silly": Parameters{
+@@ -149,6 +152,8 @@ storage:
+     secretkey: SUPERSECRET
+     host: ~
+     port: 42
++  tag:
++    concurrencylimit: 10
+ auth:
+   silly:
+     realm: silly
+@@ -537,6 +542,9 @@ func copyConfig(config Configuration) *Configuration {
+ 	for k, v := range config.Storage.Parameters() {
+ 		configCopy.Storage.setParameter(k, v)
+ 	}
++	for k, v := range config.Storage.TagParameters() {
++		configCopy.Storage.setTagParameter(k, v)
++	}
+ 	configCopy.Reporting = Reporting{
+ 		Bugsnag:  BugsnagReporting{config.Reporting.Bugsnag.APIKey, config.Reporting.Bugsnag.ReleaseStage, config.Reporting.Bugsnag.Endpoint},
+ 		NewRelic: NewRelicReporting{config.Reporting.NewRelic.LicenseKey, config.Reporting.NewRelic.Name, config.Reporting.NewRelic.Verbose},
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 75f52dea..46b8b999 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -152,6 +152,8 @@ storage:
+     chunksize: optional size valye
+     rootdirectory: optional root directory
+   inmemory:  # This driver takes no parameters
++  tag:
++    concurrencylimit: 8
+   delete:
+     enabled: false
+   redirect:
+@@ -554,6 +556,26 @@ layer metadata.
+ > **NOTE**: Formerly, `blobdescriptor` was known as `layerinfo`. While these
+ > are equivalent, `layerinfo` has been deprecated.
+ 
++### `tag`
++
++The `tag` subsection provides configuration to set concurrency limit for tag lookup.
++When user calls into the registry to delete the manifest, which in turn then does a
++lookup for all tags that reference the deleted manifest. To find the tag references,
++the registry will iterate every tag in the repository and read it's link file to check
++if it matches the deleted manifest (i.e. to see if uses the same sha256 digest).
++So, the more tags in repository, the worse the performance will be (as there will
++be more S3 API calls occurring for the tag directory lookups and tag file reads if
++using S3 storage driver).
++
++Therefore, add a single flag `concurrencylimit` to set concurrency limit to optimize tag
++lookup performance under the `tag` section. When a value is not provided or equal to 0,
++`GOMAXPROCS` will be used.
++
++```yaml
++tag:
++  concurrencylimit: 8
++```
++
+ ### `redirect`
+ 
+ The `redirect` subsection provides configuration for managing redirects from
+diff --git a/registry/handlers/app.go b/registry/handlers/app.go
+index 45cf4906..fd0c4914 100644
+--- a/registry/handlers/app.go
++++ b/registry/handlers/app.go
+@@ -206,6 +206,21 @@ func NewApp(ctx context.Context, config *configuration.Configuration) *App {
+ 		}
+ 	}
+ 
++	// configure tag lookup concurrency limit
++	if p := config.Storage.TagParameters(); p != nil {
++		l, ok := p["concurrencylimit"]
++		if ok {
++			limit, ok := l.(int)
++			if !ok {
++				panic("tag lookup concurrency limit config key must have a integer value")
++			}
++			if limit < 0 {
++				panic("tag lookup concurrency limit should be a non-negative integer value")
++			}
++			options = append(options, storage.TagLookupConcurrencyLimit(limit))
++		}
++	}
++
+ 	// configure redirects
+ 	var redirectDisabled bool
+ 	if redirectConfig, ok := config.Storage["redirect"]; ok {
+diff --git a/registry/handlers/manifests.go b/registry/handlers/manifests.go
+index 0d8b6588..ad5836d0 100644
+--- a/registry/handlers/manifests.go
++++ b/registry/handlers/manifests.go
+@@ -5,6 +5,7 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"strings"
++	"sync"
+ 
+ 	"github.com/distribution/reference"
+ 	"github.com/docker/distribution"
+@@ -16,9 +17,11 @@ import (
+ 	"github.com/docker/distribution/registry/api/errcode"
+ 	v2 "github.com/docker/distribution/registry/api/v2"
+ 	"github.com/docker/distribution/registry/auth"
++	"github.com/docker/distribution/registry/storage"
+ 	"github.com/gorilla/handlers"
+ 	"github.com/opencontainers/go-digest"
+ 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
++	"golang.org/x/sync/errgroup"
+ )
+ 
+ // These constants determine which architecture and OS to choose from a
+@@ -520,11 +523,34 @@ func (imh *manifestHandler) DeleteManifest(w http.ResponseWriter, r *http.Reques
+ 		return
+ 	}
+ 
++	var (
++		errs []error
++		mu   sync.Mutex
++	)
++	g := errgroup.Group{}
++	g.SetLimit(storage.DefaultConcurrencyLimit)
+ 	for _, tag := range referencedTags {
+-		if err := tagService.Untag(imh, tag); err != nil {
+-			imh.Errors = append(imh.Errors, err)
+-			return
+-		}
++		tag := tag
++
++		g.Go(func() error {
++			if err := tagService.Untag(imh, tag); err != nil {
++				mu.Lock()
++				errs = append(errs, err)
++				mu.Unlock()
++			}
++			return nil
++		})
++	}
++	_ = g.Wait() // imh will record all errors, so ignore the error of Wait()
++
++	// Blockcast deviation from upstream a2afe23f38: upstream assigns
++	// imh.Errors = errs and then unconditionally writes 202 Accepted, which
++	// reports success for a DELETE that left dangling tags. The serial code
++	// this replaces returned the error without writing 202; keep that
++	// fail-closed behaviour.
++	if len(errs) > 0 {
++		imh.Errors = append(imh.Errors, errs...)
++		return
+ 	}
+ 
+ 	w.WriteHeader(http.StatusAccepted)
+diff --git a/registry/handlers/tag_concurrency_test.go b/registry/handlers/tag_concurrency_test.go
+new file mode 100644
+index 00000000..e8197e52
+--- /dev/null
++++ b/registry/handlers/tag_concurrency_test.go
+@@ -0,0 +1,188 @@
++package handlers
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/http"
++	"regexp"
++	"strings"
++	"testing"
++
++	"github.com/distribution/reference"
++	"github.com/docker/distribution"
++	"github.com/docker/distribution/configuration"
++	"github.com/docker/distribution/registry/storage"
++	storagedriver "github.com/docker/distribution/registry/storage/driver"
++	"github.com/docker/distribution/registry/storage/driver/factory"
++	"github.com/docker/distribution/registry/storage/driver/inmemory"
++	"github.com/opencontainers/go-digest"
++)
++
++// Tests for the backport of distribution/distribution a2afe23f38 ("add
++// concurrency limits for tag lookup and untag") onto goharbor/distribution
++// release/2.8.
++
++const untagFailDriverName = "untagfaildriver"
++
++// tagDirPath matches the manifestTagPathSpec directory that tagStore.Untag
++// deletes: <root>/v2/repositories/<name>/_manifests/tags/<tag>
++var tagDirPath = regexp.MustCompile(`/_manifests/tags/[^/]+$`)
++
++var errInjectedUntag = errors.New("injected untag failure")
++
++func init() {
++	factory.Register(untagFailDriverName, &untagFailDriverFactory{})
++}
++
++type untagFailDriverFactory struct{}
++
++func (f *untagFailDriverFactory) Create(parameters map[string]interface{}) (storagedriver.StorageDriver, error) {
++	return &untagFailDriver{StorageDriver: inmemory.New()}, nil
++}
++
++// untagFailDriver fails every tag-directory delete, i.e. every Untag.
++type untagFailDriver struct {
++	storagedriver.StorageDriver
++}
++
++func (d *untagFailDriver) Delete(ctx context.Context, path string) error {
++	if tagDirPath.MatchString(path) {
++		return errInjectedUntag
++	}
++	return d.StorageDriver.Delete(ctx, path)
++}
++
++func tagConcurrencyTestConfig(driver string, tag configuration.Parameters) *configuration.Configuration {
++	config := &configuration.Configuration{
++		Storage: configuration.Storage{
++			driver:   configuration.Parameters{},
++			"delete": configuration.Parameters{"enabled": true},
++			"maintenance": configuration.Parameters{"uploadpurging": map[interface{}]interface{}{
++				"enabled": false,
++			}},
++		},
++	}
++	if tag != nil {
++		config.Storage["tag"] = tag
++	}
++	config.Compatibility.Schema1.Enabled = true
++	config.HTTP.Headers = headerConfig
++	return config
++}
++
++func TestNewAppTagConcurrencyLimitConfig(t *testing.T) {
++	cases := []struct {
++		name      string
++		tag       configuration.Parameters
++		wantPanic string
++	}{
++		{name: "absent"},
++		{name: "zero", tag: configuration.Parameters{"concurrencylimit": 0}},
++		{name: "positive", tag: configuration.Parameters{"concurrencylimit": 8}},
++		{name: "string", tag: configuration.Parameters{"concurrencylimit": "8"}, wantPanic: "must have a integer value"},
++		{name: "negative", tag: configuration.Parameters{"concurrencylimit": -1}, wantPanic: "non-negative integer value"},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			defer func() {
++				r := recover()
++				if tc.wantPanic == "" {
++					if r != nil {
++						t.Fatalf("NewApp panicked: %v", r)
++					}
++					return
++				}
++				if r == nil {
++					t.Fatalf("NewApp accepted invalid tag config %v", tc.tag)
++				}
++				if !strings.Contains(fmt.Sprint(r), tc.wantPanic) {
++					t.Fatalf("panic = %v, want it to contain %q", r, tc.wantPanic)
++				}
++			}()
++			NewApp(context.Background(), tagConcurrencyTestConfig("testdriver", tc.tag))
++		})
++	}
++}
++
++func deleteByDigest(t *testing.T, env *testEnv, imageName string, dgst digest.Digest) *http.Response {
++	t.Helper()
++	named, err := reference.WithName(imageName)
++	if err != nil {
++		t.Fatal(err)
++	}
++	digestRef, err := reference.WithDigest(named, dgst)
++	if err != nil {
++		t.Fatal(err)
++	}
++	u, err := env.builder.BuildManifestURL(digestRef)
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp, err := httpDelete(u)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return resp
++}
++
++// TestDeleteManifestUntagsAllReferencingTags is the positive control: a
++// manifest referenced by many tags is deleted with 202 and every tag that
++// referenced it is removed by the concurrent untag loop.
++func TestDeleteManifestUntagsAllReferencingTags(t *testing.T) {
++	env := newTestEnvWithConfig(t, tagConcurrencyTestConfig("testdriver", nil))
++	defer env.Shutdown()
++
++	imageName := "foo/concurrent-untag"
++	dgst := createRepository(env, t, imageName, "latest")
++
++	named, _ := reference.WithName(imageName)
++	repo, err := env.app.registry.Repository(env.ctx, named)
++	if err != nil {
++		t.Fatal(err)
++	}
++	tags := repo.Tags(env.ctx)
++	// Several times the untag worker limit so worker slots are reused.
++	extra := 4 * storage.DefaultConcurrencyLimit
++	for i := 0; i < extra; i++ {
++		if err := tags.Tag(env.ctx, fmt.Sprintf("extra-%d", i), distribution.Descriptor{Digest: dgst}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	before, err := tags.Lookup(env.ctx, distribution.Descriptor{Digest: dgst})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(before) != extra+1 {
++		t.Fatalf("Lookup before delete = %d tags, want %d", len(before), extra+1)
++	}
++
++	resp := deleteByDigest(t, env, imageName, dgst)
++	defer resp.Body.Close()
++	checkResponse(t, "deleting manifest", resp, http.StatusAccepted)
++
++	after, err := tags.Lookup(env.ctx, distribution.Descriptor{Digest: dgst})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(after) != 0 {
++		t.Fatalf("tags still reference deleted manifest: %v", after)
++	}
++}
++
++// TestDeleteManifestUntagFailureFailsClosed checks the Blockcast deviation
++// from upstream: if any Untag fails the DELETE must not report 202 Accepted.
++func TestDeleteManifestUntagFailureFailsClosed(t *testing.T) {
++	env := newTestEnvWithConfig(t, tagConcurrencyTestConfig(untagFailDriverName, nil))
++	defer env.Shutdown()
++
++	imageName := "foo/untag-fails"
++	dgst := createRepository(env, t, imageName, "latest")
++
++	resp := deleteByDigest(t, env, imageName, dgst)
++	defer resp.Body.Close()
++	if resp.StatusCode == http.StatusAccepted {
++		t.Fatalf("DELETE returned 202 Accepted although every Untag failed")
++	}
++	checkResponse(t, "deleting manifest with failing untag", resp, http.StatusInternalServerError)
++}
+diff --git a/registry/storage/registry.go b/registry/storage/registry.go
+index 102abb6e..17b4cef4 100644
+--- a/registry/storage/registry.go
++++ b/registry/storage/registry.go
+@@ -3,6 +3,7 @@ package storage
+ import (
+ 	"context"
+ 	"regexp"
++	"runtime"
+ 
+ 	"github.com/distribution/reference"
+ 	"github.com/docker/distribution"
+@@ -11,6 +12,10 @@ import (
+ 	"github.com/docker/libtrust"
+ )
+ 
++var (
++	DefaultConcurrencyLimit = runtime.GOMAXPROCS(0)
++)
++
+ // registry is the top-level implementation of Registry for use in the storage
+ // package. All instances should descend from this object.
+ type registry struct {
+@@ -19,6 +24,7 @@ type registry struct {
+ 	statter                      *blobStatter // global statter service.
+ 	blobDescriptorCacheProvider  cache.BlobDescriptorCacheProvider
+ 	deleteEnabled                bool
++	tagLookupConcurrencyLimit    int
+ 	schema1Enabled               bool
+ 	resumableDigestEnabled       bool
+ 	schema1SigningKey            libtrust.PrivateKey
+@@ -43,6 +49,13 @@ func EnableRedirect(registry *registry) error {
+ 	return nil
+ }
+ 
++func TagLookupConcurrencyLimit(concurrencyLimit int) RegistryOption {
++	return func(registry *registry) error {
++		registry.tagLookupConcurrencyLimit = concurrencyLimit
++		return nil
++	}
++}
++
+ // EnableDelete is a functional option for NewRegistry. It enables deletion on
+ // the registry.
+ func EnableDelete(registry *registry) error {
+@@ -203,9 +216,14 @@ func (repo *repository) Named() reference.Named {
+ }
+ 
+ func (repo *repository) Tags(ctx context.Context) distribution.TagService {
++	limit := DefaultConcurrencyLimit
++	if repo.tagLookupConcurrencyLimit > 0 {
++		limit = repo.tagLookupConcurrencyLimit
++	}
+ 	tags := &tagStore{
+-		repository: repo,
+-		blobStore:  repo.registry.blobStore,
++		repository:       repo,
++		blobStore:        repo.registry.blobStore,
++		concurrencyLimit: limit,
+ 	}
+ 
+ 	return tags
+diff --git a/registry/storage/tagstore.go b/registry/storage/tagstore.go
+index a3c766b4..21c6738e 100644
+--- a/registry/storage/tagstore.go
++++ b/registry/storage/tagstore.go
+@@ -3,10 +3,13 @@ package storage
+ import (
+ 	"context"
+ 	"path"
++	"sync"
++
++	"github.com/opencontainers/go-digest"
++	"golang.org/x/sync/errgroup"
+ 
+ 	"github.com/docker/distribution"
+ 	storagedriver "github.com/docker/distribution/registry/storage/driver"
+-	"github.com/opencontainers/go-digest"
+ )
+ 
+ var _ distribution.TagService = &tagStore{}
+@@ -17,8 +20,9 @@ var _ distribution.TagService = &tagStore{}
+ // which only makes use of the Digest field of the returned distribution.Descriptor
+ // but does not enable full roundtripping of Descriptor objects
+ type tagStore struct {
+-	repository *repository
+-	blobStore  *blobStore
++	repository       *repository
++	blobStore        *blobStore
++	concurrencyLimit int
+ }
+ 
+ // All returns all tags
+@@ -153,26 +157,48 @@ func (ts *tagStore) Lookup(ctx context.Context, desc distribution.Descriptor) ([
+ 		return nil, err
+ 	}
+ 
+-	var tags []string
++	g, ctx := errgroup.WithContext(ctx)
++	g.SetLimit(ts.concurrencyLimit)
++
++	var (
++		tags []string
++		mu   sync.Mutex
++	)
+ 	for _, tag := range allTags {
+-		tagLinkPathSpec := manifestTagCurrentPathSpec{
+-			name: ts.repository.Named().Name(),
+-			tag:  tag,
++		if ctx.Err() != nil {
++			break
+ 		}
++		tag := tag
+ 
+-		tagLinkPath, _ := pathFor(tagLinkPathSpec)
+-		tagDigest, err := ts.blobStore.readlink(ctx, tagLinkPath)
+-		if err != nil {
+-			switch err.(type) {
+-			case storagedriver.PathNotFoundError:
+-				continue
++		g.Go(func() error {
++			tagLinkPathSpec := manifestTagCurrentPathSpec{
++				name: ts.repository.Named().Name(),
++				tag:  tag,
+ 			}
+-			return nil, err
+-		}
+ 
+-		if tagDigest == desc.Digest {
+-			tags = append(tags, tag)
+-		}
++			tagLinkPath, _ := pathFor(tagLinkPathSpec)
++			tagDigest, err := ts.blobStore.readlink(ctx, tagLinkPath)
++			if err != nil {
++				switch err.(type) {
++				case storagedriver.PathNotFoundError:
++					return nil
++				}
++				return err
++			}
++
++			if tagDigest == desc.Digest {
++				mu.Lock()
++				tags = append(tags, tag)
++				mu.Unlock()
++			}
++
++			return nil
++		})
++	}
++
++	err = g.Wait()
++	if err != nil {
++		return nil, err
+ 	}
+ 
+ 	return tags, nil
+diff --git a/registry/storage/tagstore_concurrency_test.go b/registry/storage/tagstore_concurrency_test.go
+new file mode 100644
+index 00000000..2b9d753e
+--- /dev/null
++++ b/registry/storage/tagstore_concurrency_test.go
+@@ -0,0 +1,331 @@
++package storage
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"sort"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/distribution/reference"
++	"github.com/docker/distribution"
++	storagedriver "github.com/docker/distribution/registry/storage/driver"
++	"github.com/docker/distribution/registry/storage/driver/inmemory"
++	"github.com/opencontainers/go-digest"
++)
++
++// Tests for the backport of distribution/distribution a2afe23f38 ("add
++// concurrency limits for tag lookup and untag") onto goharbor/distribution
++// release/2.8.
++
++const currentLinkSuffix = "/current/link"
++
++// serialLookup is the pre-backport tagStore.Lookup algorithm, kept verbatim
++// (modulo receiver) as the reference the concurrent implementation must match.
++func serialLookup(ctx context.Context, ts *tagStore, desc distribution.Descriptor) ([]string, error) {
++	allTags, err := ts.All(ctx)
++	switch err.(type) {
++	case distribution.ErrRepositoryUnknown:
++		break
++	case nil:
++		break
++	default:
++		return nil, err
++	}
++
++	var tags []string
++	for _, tag := range allTags {
++		tagLinkPathSpec := manifestTagCurrentPathSpec{
++			name: ts.repository.Named().Name(),
++			tag:  tag,
++		}
++
++		tagLinkPath, _ := pathFor(tagLinkPathSpec)
++		tagDigest, err := ts.blobStore.readlink(ctx, tagLinkPath)
++		if err != nil {
++			switch err.(type) {
++			case storagedriver.PathNotFoundError:
++				continue
++			}
++			return nil, err
++		}
++
++		if tagDigest == desc.Digest {
++			tags = append(tags, tag)
++		}
++	}
++
++	return tags, nil
++}
++
++func newTestTagStore(t *testing.T, d storagedriver.StorageDriver, options ...RegistryOption) (context.Context, *tagStore) {
++	t.Helper()
++	ctx := context.Background()
++	reg, err := NewRegistry(ctx, d, options...)
++	if err != nil {
++		t.Fatal(err)
++	}
++	repoRef, _ := reference.WithName("a/b")
++	repo, err := reg.Repository(ctx, repoRef)
++	if err != nil {
++		t.Fatal(err)
++	}
++	ts, ok := repo.Tags(ctx).(*tagStore)
++	if !ok {
++		t.Fatalf("repo.Tags returned %T, want *tagStore", repo.Tags(ctx))
++	}
++	return ctx, ts
++}
++
++func digestFor(i int) digest.Digest {
++	return digest.FromString(fmt.Sprintf("manifest-%d", i))
++}
++
++func sortedCopy(in []string) []string {
++	out := append([]string(nil), in...)
++	sort.Strings(out)
++	return out
++}
++
++// TestTagLookupMatchesSerial populates a repository with many tags spread
++// across several digests, removes the current/link of a subset of them (a tag
++// directory that All() lists but whose link is missing must be skipped, not
++// fail the lookup), and checks the concurrent Lookup returns exactly the tag
++// set the serial algorithm returns for every digest.
++func TestTagLookupMatchesSerial(t *testing.T) {
++	d := inmemory.New()
++	ctx, ts := newTestTagStore(t, d)
++
++	// Enough tags that every worker slot is reused many times over.
++	numTags := ts.concurrencyLimit * 16
++	numDigests := 7
++	missingEvery := 5
++
++	missing := map[string]bool{}
++	for i := 0; i < numTags; i++ {
++		tag := fmt.Sprintf("tag-%04d", i)
++		if err := ts.Tag(ctx, tag, distribution.Descriptor{Digest: digestFor(i % numDigests)}); err != nil {
++			t.Fatal(err)
++		}
++		if i%missingEvery == 0 {
++			p, err := pathFor(manifestTagCurrentPathSpec{name: ts.repository.Named().Name(), tag: tag})
++			if err != nil {
++				t.Fatal(err)
++			}
++			if err := d.Delete(ctx, p); err != nil {
++				t.Fatal(err)
++			}
++			missing[tag] = true
++		}
++	}
++
++	all, err := ts.All(ctx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(all) != numTags {
++		t.Fatalf("All returned %d tags, want %d (missing-link tags must still be listed)", len(all), numTags)
++	}
++
++	total := 0
++	// One extra digest that no tag references.
++	for i := 0; i <= numDigests; i++ {
++		desc := distribution.Descriptor{Digest: digestFor(i)}
++		want, err := serialLookup(ctx, ts, desc)
++		if err != nil {
++			t.Fatal(err)
++		}
++		got, err := ts.Lookup(ctx, desc)
++		if err != nil {
++			t.Fatal(err)
++		}
++		w, g := sortedCopy(want), sortedCopy(got)
++		if strings.Join(w, ",") != strings.Join(g, ",") {
++			t.Fatalf("digest %d: concurrent Lookup = %v, serial = %v", i, g, w)
++		}
++		for _, tag := range got {
++			if missing[tag] {
++				t.Fatalf("Lookup returned tag %q whose current link was removed", tag)
++			}
++		}
++		total += len(got)
++	}
++	if want := numTags - len(missing); total != want {
++		t.Fatalf("Lookup across all digests returned %d tags, want %d", total, want)
++	}
++}
++
++// TestTagLookupEmptyRepository preserves the pre-backport behaviour that an
++// initialised but unpopulated tag store yields no tags and no error.
++func TestTagLookupEmptyRepository(t *testing.T) {
++	ctx, ts := newTestTagStore(t, inmemory.New())
++	tags, err := ts.Lookup(ctx, distribution.Descriptor{Digest: digestFor(0)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(tags) != 0 {
++		t.Fatalf("Lookup on empty repository returned %v", tags)
++	}
++}
++
++// gatedDriver counts concurrent current-link reads and can fail one of them.
++type gatedDriver struct {
++	storagedriver.StorageDriver
++
++	mu       sync.Mutex
++	inFlight int
++	maxSeen  int
++
++	// release is closed once inFlight first reaches gate; reads block on it
++	// so the test can prove gate reads really were in flight together.
++	gate    int
++	release chan struct{}
++
++	failPath string
++	failErr  error
++}
++
++func (g *gatedDriver) GetContent(ctx context.Context, path string) ([]byte, error) {
++	if !strings.HasSuffix(path, currentLinkSuffix) {
++		return g.StorageDriver.GetContent(ctx, path)
++	}
++	if path == g.failPath {
++		return nil, g.failErr
++	}
++
++	g.mu.Lock()
++	g.inFlight++
++	if g.inFlight > g.maxSeen {
++		g.maxSeen = g.inFlight
++	}
++	if g.release != nil && g.inFlight == g.gate {
++		close(g.release)
++		g.release = nil
++	}
++	ch := g.release
++	g.mu.Unlock()
++
++	if ch != nil {
++		select {
++		case <-ch:
++		case <-ctx.Done():
++		}
++	}
++
++	defer func() {
++		g.mu.Lock()
++		g.inFlight--
++		g.mu.Unlock()
++	}()
++	return g.StorageDriver.GetContent(ctx, path)
++}
++
++// TestTagLookupConcurrencyIsBounded proves Lookup issues exactly up to the
++// configured number of link reads at once: every read blocks until `limit`
++// reads are in flight together (so a serial implementation would never make
++// progress), and the observed maximum never exceeds the limit.
++func TestTagLookupConcurrencyIsBounded(t *testing.T) {
++	limit := 4
++	gd := &gatedDriver{StorageDriver: inmemory.New(), gate: limit, release: make(chan struct{})}
++	ctx, ts := newTestTagStore(t, gd, TagLookupConcurrencyLimit(limit))
++	if ts.concurrencyLimit != limit {
++		t.Fatalf("tagStore.concurrencyLimit = %d, want %d", ts.concurrencyLimit, limit)
++	}
++
++	numTags := limit * 8
++	for i := 0; i < numTags; i++ {
++		if err := ts.Tag(ctx, fmt.Sprintf("t%d", i), distribution.Descriptor{Digest: digestFor(0)}); err != nil {
++			t.Fatal(err)
++		}
++	}
++
++	done := make(chan struct{})
++	var (
++		tags []string
++		err  error
++	)
++	go func() {
++		defer close(done)
++		tags, err = ts.Lookup(ctx, distribution.Descriptor{Digest: digestFor(0)})
++	}()
++
++	deadline, ok := t.Deadline()
++	if !ok {
++		<-done
++	} else {
++		lctx, cancel := context.WithDeadline(context.Background(), deadline)
++		defer cancel()
++		select {
++		case <-done:
++		case <-lctx.Done():
++			t.Fatalf("Lookup never reached %d concurrent link reads (max seen %d)", limit, gd.maxSeen)
++		}
++	}
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(tags) != numTags {
++		t.Fatalf("Lookup returned %d tags, want %d", len(tags), numTags)
++	}
++	gd.mu.Lock()
++	defer gd.mu.Unlock()
++	if gd.maxSeen != limit {
++		t.Fatalf("max concurrent link reads = %d, want exactly %d", gd.maxSeen, limit)
++	}
++}
++
++// TestTagLookupPropagatesStorageError keeps the fail-closed behaviour: a
++// storage error other than PathNotFound on any tag fails the whole lookup
++// instead of silently returning a partial tag set.
++func TestTagLookupPropagatesStorageError(t *testing.T) {
++	gd := &gatedDriver{StorageDriver: inmemory.New()}
++	ctx, ts := newTestTagStore(t, gd)
++
++	numTags := ts.concurrencyLimit * 4
++	for i := 0; i < numTags; i++ {
++		if err := ts.Tag(ctx, fmt.Sprintf("t%d", i), distribution.Descriptor{Digest: digestFor(0)}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	failPath, err := pathFor(manifestTagCurrentPathSpec{name: ts.repository.Named().Name(), tag: fmt.Sprintf("t%d", numTags/2)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	gd.failPath = failPath
++	gd.failErr = errors.New("injected backend failure")
++
++	tags, err := ts.Lookup(ctx, distribution.Descriptor{Digest: digestFor(0)})
++	if err == nil {
++		t.Fatalf("Lookup succeeded with %d tags despite a backend read failure", len(tags))
++	}
++	if !errors.Is(err, gd.failErr) {
++		t.Fatalf("Lookup error = %v, want %v", err, gd.failErr)
++	}
++	if tags != nil {
++		t.Fatalf("Lookup returned partial tags %v alongside an error", tags)
++	}
++}
++
++// TestTagLookupConcurrencyLimitOption checks the RegistryOption plumbing and
++// that an unset or zero limit falls back to GOMAXPROCS, as upstream does.
++func TestTagLookupConcurrencyLimitOption(t *testing.T) {
++	cases := []struct {
++		name    string
++		options []RegistryOption
++		want    int
++	}{
++		{name: "unset", want: DefaultConcurrencyLimit},
++		{name: "zero", options: []RegistryOption{TagLookupConcurrencyLimit(0)}, want: DefaultConcurrencyLimit},
++		{name: "explicit", options: []RegistryOption{TagLookupConcurrencyLimit(DefaultConcurrencyLimit + 1)}, want: DefaultConcurrencyLimit + 1},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			_, ts := newTestTagStore(t, inmemory.New(), tc.options...)
++			if ts.concurrencyLimit != tc.want {
++				t.Fatalf("concurrencyLimit = %d, want %d", ts.concurrencyLimit, tc.want)
++			}
++		})
++	}
++}
+diff --git a/vendor.conf b/vendor.conf
+index 4316e785..226bdba8 100644
+--- a/vendor.conf
++++ b/vendor.conf
+@@ -41,6 +41,7 @@ golang.org/x/net b225e7ca6dde1ef5a5ae5ce922861bda011cfabd # v0.17.0
+ golang.org/x/text f488e191e67ed95a5b9b7b39024e5a5f5f1ffd02 # v0.13.0
+ golang.org/x/oauth2 045497edb6234273d67dbc25da3f2ddbc4c4cacf
+ golang.org/x/time a4bde12657593d5e90d0533a3e4fd95e635124cb
++golang.org/x/sync 93782cc822b6b554cb7df40332fd010f0473cbc8 # v0.3.0
+ google.golang.org/api 9bf6e6e569ff057f75d9604a46c52928f17d2b54
+ google.golang.org/appengine 12d5545dc1cfa6047a286d5e853841b6471f4c19
+ google.golang.org/cloud 975617b05ea8a58727e6c1a06b6161ff4185a9f2
+diff --git a/vendor/golang.org/x/sync/LICENSE b/vendor/golang.org/x/sync/LICENSE
+new file mode 100644
+index 00000000..6a66aea5
+--- /dev/null
++++ b/vendor/golang.org/x/sync/LICENSE
+@@ -0,0 +1,27 @@
++Copyright (c) 2009 The Go Authors. All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are
++met:
++
++   * Redistributions of source code must retain the above copyright
++notice, this list of conditions and the following disclaimer.
++   * Redistributions in binary form must reproduce the above
++copyright notice, this list of conditions and the following disclaimer
++in the documentation and/or other materials provided with the
++distribution.
++   * Neither the name of Google Inc. nor the names of its
++contributors may be used to endorse or promote products derived from
++this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+diff --git a/vendor/golang.org/x/sync/PATENTS b/vendor/golang.org/x/sync/PATENTS
+new file mode 100644
+index 00000000..73309904
+--- /dev/null
++++ b/vendor/golang.org/x/sync/PATENTS
+@@ -0,0 +1,22 @@
++Additional IP Rights Grant (Patents)
++
++"This implementation" means the copyrightable works distributed by
++Google as part of the Go project.
++
++Google hereby grants to You a perpetual, worldwide, non-exclusive,
++no-charge, royalty-free, irrevocable (except as stated in this section)
++patent license to make, have made, use, offer to sell, sell, import,
++transfer and otherwise run, modify and propagate the contents of this
++implementation of Go, where such license applies only to those patent
++claims, both currently owned or controlled by Google and acquired in
++the future, licensable by Google that are necessarily infringed by this
++implementation of Go.  This grant does not include claims that would be
++infringed only as a consequence of further modification of this
++implementation.  If you or your agent or exclusive licensee institute or
++order or agree to the institution of patent litigation against any
++entity (including a cross-claim or counterclaim in a lawsuit) alleging
++that this implementation of Go or any code incorporated within this
++implementation of Go constitutes direct or contributory patent
++infringement, or inducement of patent infringement, then any patent
++rights granted to you under this License for this implementation of Go
++shall terminate as of the date such litigation is filed.
+diff --git a/vendor/golang.org/x/sync/README.md b/vendor/golang.org/x/sync/README.md
+new file mode 100644
+index 00000000..7c1c8f6c
+--- /dev/null
++++ b/vendor/golang.org/x/sync/README.md
+@@ -0,0 +1,20 @@
++# Go Sync
++
++[![Go Reference](https://pkg.go.dev/badge/golang.org/x/sync.svg)](https://pkg.go.dev/golang.org/x/sync)
++
++This repository provides Go concurrency primitives in addition to the
++ones provided by the language and "sync" and "sync/atomic" packages.
++
++## Download/Install
++
++The easiest way to install is to run `go get -u golang.org/x/sync`. You can
++also manually git clone the repository to `$GOPATH/src/golang.org/x/sync`.
++
++## Report Issues / Send Patches
++
++This repository uses Gerrit for code changes. To learn how to submit changes to
++this repository, see https://golang.org/doc/contribute.html.
++
++The main issue tracker for the sync repository is located at
++https://github.com/golang/go/issues. Prefix your issue with "x/sync:" in the
++subject line, so it is easy to find.
+diff --git a/vendor/golang.org/x/sync/errgroup/errgroup.go b/vendor/golang.org/x/sync/errgroup/errgroup.go
+new file mode 100644
+index 00000000..b18efb74
+--- /dev/null
++++ b/vendor/golang.org/x/sync/errgroup/errgroup.go
+@@ -0,0 +1,132 @@
++// Copyright 2016 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Package errgroup provides synchronization, error propagation, and Context
++// cancelation for groups of goroutines working on subtasks of a common task.
++package errgroup
++
++import (
++	"context"
++	"fmt"
++	"sync"
++)
++
++type token struct{}
++
++// A Group is a collection of goroutines working on subtasks that are part of
++// the same overall task.
++//
++// A zero Group is valid, has no limit on the number of active goroutines,
++// and does not cancel on error.
++type Group struct {
++	cancel func(error)
++
++	wg sync.WaitGroup
++
++	sem chan token
++
++	errOnce sync.Once
++	err     error
++}
++
++func (g *Group) done() {
++	if g.sem != nil {
++		<-g.sem
++	}
++	g.wg.Done()
++}
++
++// WithContext returns a new Group and an associated Context derived from ctx.
++//
++// The derived Context is canceled the first time a function passed to Go
++// returns a non-nil error or the first time Wait returns, whichever occurs
++// first.
++func WithContext(ctx context.Context) (*Group, context.Context) {
++	ctx, cancel := withCancelCause(ctx)
++	return &Group{cancel: cancel}, ctx
++}
++
++// Wait blocks until all function calls from the Go method have returned, then
++// returns the first non-nil error (if any) from them.
++func (g *Group) Wait() error {
++	g.wg.Wait()
++	if g.cancel != nil {
++		g.cancel(g.err)
++	}
++	return g.err
++}
++
++// Go calls the given function in a new goroutine.
++// It blocks until the new goroutine can be added without the number of
++// active goroutines in the group exceeding the configured limit.
++//
++// The first call to return a non-nil error cancels the group's context, if the
++// group was created by calling WithContext. The error will be returned by Wait.
++func (g *Group) Go(f func() error) {
++	if g.sem != nil {
++		g.sem <- token{}
++	}
++
++	g.wg.Add(1)
++	go func() {
++		defer g.done()
++
++		if err := f(); err != nil {
++			g.errOnce.Do(func() {
++				g.err = err
++				if g.cancel != nil {
++					g.cancel(g.err)
++				}
++			})
++		}
++	}()
++}
++
++// TryGo calls the given function in a new goroutine only if the number of
++// active goroutines in the group is currently below the configured limit.
++//
++// The return value reports whether the goroutine was started.
++func (g *Group) TryGo(f func() error) bool {
++	if g.sem != nil {
++		select {
++		case g.sem <- token{}:
++			// Note: this allows barging iff channels in general allow barging.
++		default:
++			return false
++		}
++	}
++
++	g.wg.Add(1)
++	go func() {
++		defer g.done()
++
++		if err := f(); err != nil {
++			g.errOnce.Do(func() {
++				g.err = err
++				if g.cancel != nil {
++					g.cancel(g.err)
++				}
++			})
++		}
++	}()
++	return true
++}
++
++// SetLimit limits the number of active goroutines in this group to at most n.
++// A negative value indicates no limit.
++//
++// Any subsequent call to the Go method will block until it can add an active
++// goroutine without exceeding the configured limit.
++//
++// The limit must not be modified while any goroutines in the group are active.
++func (g *Group) SetLimit(n int) {
++	if n < 0 {
++		g.sem = nil
++		return
++	}
++	if len(g.sem) != 0 {
++		panic(fmt.Errorf("errgroup: modify limit while %v goroutines in the group are still active", len(g.sem)))
++	}
++	g.sem = make(chan token, n)
++}
+diff --git a/vendor/golang.org/x/sync/errgroup/go120.go b/vendor/golang.org/x/sync/errgroup/go120.go
+new file mode 100644
+index 00000000..7d419d37
+--- /dev/null
++++ b/vendor/golang.org/x/sync/errgroup/go120.go
+@@ -0,0 +1,14 @@
++// Copyright 2023 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build go1.20
++// +build go1.20
++
++package errgroup
++
++import "context"
++
++func withCancelCause(parent context.Context) (context.Context, func(error)) {
++	return context.WithCancelCause(parent)
++}
+diff --git a/vendor/golang.org/x/sync/errgroup/pre_go120.go b/vendor/golang.org/x/sync/errgroup/pre_go120.go
+new file mode 100644
+index 00000000..1795c18a
+--- /dev/null
++++ b/vendor/golang.org/x/sync/errgroup/pre_go120.go
+@@ -0,0 +1,15 @@
++// Copyright 2023 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build !go1.20
++// +build !go1.20
++
++package errgroup
++
++import "context"
++
++func withCancelCause(parent context.Context) (context.Context, func(error)) {
++	ctx, cancel := context.WithCancel(parent)
++	return ctx, func(error) { cancel() }
++}
+-- 
+2.50.1 (Apple Git-155)
+
