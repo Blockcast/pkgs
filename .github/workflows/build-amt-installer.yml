@@ -86,8 +86,14 @@ jobs:
           case "$KIMG" in *:"${TALOS}"-*) : ;; *)
             echo "kernel_image '$KIMG' is not tagged for Talos ${TALOS}" >&2; exit 1 ;;
           esac
-          [ "${INSTALLER_TAG%%-*}" = "$TALOS" ] ||
-            { echo "installer_tag '$INSTALLER_TAG' does not match talos_version ${TALOS}" >&2; exit 1; }
+          # Prefix test, not first-hyphen truncation: a pre-release talos_version
+          # (v1.14.0-alpha.0) carries its own hyphen, and %%-* would make this
+          # step reject the INSTALLER_TAG it derived itself from $TALOS just
+          # above. Matches the kernel_image check immediately preceding. Quoted
+          # "$TALOS" stays literal in a case pattern, so it cannot glob.
+          case "$INSTALLER_TAG" in "$TALOS"-*) : ;; *)
+            echo "installer_tag '$INSTALLER_TAG' does not match talos_version ${TALOS}" >&2; exit 1 ;;
+          esac
           # Every value below is appended to $GITHUB_OUTPUT, so a newline in any
           # of them injects an extra step output. The format globs above do not
           # catch it (* matches whitespace) and pkgs_sha has no glob at all.

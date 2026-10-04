@@ -150,7 +150,10 @@ self_test() {
   # `:` would pass the suite: both of these are prefix-mismatches of the alpha
   # declaration. (A pre-release *tag* on a GA ref stays accepted -- "v1.14.0"-*
   # matches v1.14.0-alpha.0-amt-... -- exactly as the old ${tag%%-*} equality
-  # accepted it. Unchanged behaviour, so not asserted here.)
+  # accepted it. Unchanged behaviour, so not asserted here. Tolerable where
+  # compose refuses the same ambiguity because this file HAS a Pkgfile: the
+  # ref's own talos_version is the authority, so a mislabelled variant is
+  # cosmetic, not a wrong pairing.)
   bad "GA tag from a pre-release ref rejected"       v1.14.0-amt-ct6-mroute
   bad "other-minor tag from a pre-release ref rejected" v1.13.4-amt-ct6-mroute
   printf 'vars:\n  linux_version: 6.18.34\n  talos_version: v1.13.4\n' > "$d/Pkgfile"
