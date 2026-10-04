@@ -88,7 +88,19 @@ scan() {
     # lookahead, which ERE has not; awk is the one stage that can express it.
     # `grep .` is load-bearing -- awk always exits 0, and callers read scan's
     # exit status to mean "found something".
-    awk '!/'"$EXEMPT"'/ || /default:/' |
+    #
+    # Two things here are deliberate and both are mutation-pinned below:
+    # - $EXEMPT is passed as *data* (-v), not spliced into program text. A `/`
+    #   in the value would otherwise be a parse error, awk would die, `grep .`
+    #   would see empty input and the scan would report a clean bill of health.
+    #   A guard that fails open is worse than no guard.
+    # - the carve-out is anchored to the key position of grep -rn's
+    #   `path:line:content` output, which the comment filter at :85 already
+    #   assumes. Unanchored, `default:` anywhere on the line cancels the hatch
+    #   -- including inside a plant payload, or in the prose explaining the
+    #   exemption itself -- and the message then names a surface that is not
+    #   there.
+    awk -v ex="$EXEMPT" '$0 !~ ex || /^[^:]*:[0-9]+:[[:space:]]*default:/' |
     grep .
 }
 
@@ -164,6 +176,14 @@ self_test() {
   # re-open exactly what this guard exists to catch.
   probe "default: cannot be exempted" catch \
     "    default: 'v1.13.4' # version-literal-ok"
+  # ...where "a `default:`" means the key, not the substring. Both of these
+  # carry `default:` somewhere on the line and neither is a workflow default;
+  # the second is the one that will actually bite, since explaining your own
+  # exemption would cancel it. Fail if the carve-out loses its anchor.
+  probe "default: inside a plant payload stays exempt" pass \
+    '          plant a.yml "default: v1.13.4" # version-literal-ok' c.sh
+  probe "default: in the exemption prose stays exempt" pass \
+    '          TAG=v1.13.4 # version-literal-ok, replaces the old default:' c.sh
   # A measured limit, not an aspiration: N.N.N is a prefix of N.N.N.N, so an
   # address reads as a version. Declared here so the shape is known rather than
   # rediscovered on a red build. Goes red if the arms are ever narrowed -- at
@@ -174,6 +194,21 @@ self_test() {
     '          # the old default: v1.13.4 was removed in BLO-39684'
   probe "description prose"       pass  "        description: 'image tag; defaults to the Pkgfile value'"
   probe "clean workflow"          pass  '    runs-on: ubuntu-latest'
+
+  # $EXEMPT reaches awk as data, so a `/` in it is just a character. Spliced
+  # into program text it is a parse error instead: awk dies, `grep .` sees
+  # empty input, and the guard reports clean over a file that is not. probe()
+  # cannot reach this -- it never varies $EXEMPT -- so assert it directly.
+  # Fails if `-v ex=` is reverted to the interpolated form.
+  rm -f "$d"/*
+  printf '%s\n' "    default: 'v1.13.4'" > "$d/a.yml"
+  rc=0; ( EXEMPT='#[[:space:]]*version-literal-ok/x'; scan "$d" >/dev/null 2>&1 ) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "ok   a slash in \$EXEMPT does not zero the guard"
+  else
+    echo "FAIL a slash in \$EXEMPT does not zero the guard (scan found nothing)"
+    fails=$((fails + 1))
+  fi
 
   # A guard that cannot find anything to guard must not report that it found
   # nothing wrong. probe() cannot reach this -- it always creates its directory
