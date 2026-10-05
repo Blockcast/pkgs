@@ -102,6 +102,49 @@ valid_repository() {
   [[ "$repository" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)+$ ]]
 }
 
+# Is this a host the credential may be SENT to?
+#
+# Strictly more load-bearing than valid_repository, and the asymmetry is the
+# point: the credential lives in a curlrc, which is preemptive Basic auth, so
+# curl presents HARBOR_USERNAME/HARBOR_PASSWORD on the FIRST request to
+# whatever host is named here. A bad repository misreports a verdict; a bad
+# host hands the credential to a stranger.
+#
+# Both names are the same Harbor instance -- see this script's header.
+#
+# returns 0 when safe
+valid_host() {
+  local host=$1
+  [[ "$host" =~ ^(harbor|registry)\.blockcast\.net$ ]]
+}
+
+# Did curl fail before Harbor ever answered?
+#
+# `curl -f` exits non-zero both for an HTTP 4xx (22) and for never having
+# reached the server at all (6 DNS, 7 connect, 28 timeout, 35 TLS). Reporting
+# the second as "rejected the credential" routes a network problem to a
+# credential ask -- the one answer this script otherwise refuses to guess.
+#
+# echoes exactly one of: network | credential
+curl_failure_kind() {
+  case "$1" in
+    6|7|28|35) echo network ;;
+    *)         echo credential ;;
+  esac
+}
+
+# Escape a value for a double-quoted curl config entry.
+#
+# curl unescapes \\ and \" inside a quoted value, so a password containing
+# either would otherwise truncate the line -- and the symptom is an
+# authentication FATAL, i.e. a quoting bug wearing the costume of a credential
+# problem. Backslash first, or the escapes we add get escaped too.
+curlrc_escape() {
+  local value=$1
+  value=${value//\\/\\\\}
+  printf '%s' "${value//\"/\\\"}"
+}
+
 # Sourced by the test for the functions above; skip the side-effecting half.
 if [[ "${HARBOR_PREFLIGHT_LIB_ONLY:-0}" == 1 ]]; then
   return 0 2>/dev/null || exit 0
@@ -126,6 +169,14 @@ valid_repository "$REPOSITORY" || {
   exit 2
 }
 
+valid_host "$HOST" || {
+  echo "refusing to send the Harbor credential to: $HOST" >&2
+  echo "curl is configured with preemptive Basic auth, so it would present" >&2
+  echo "HARBOR_USERNAME/HARBOR_PASSWORD to this host on the very first request." >&2
+  echo "Allowed: harbor.blockcast.net, registry.blockcast.net (same instance)." >&2
+  exit 2
+}
+
 for name in HARBOR_USERNAME HARBOR_PASSWORD; do
   [[ -n "${!name:-}" ]] || {
     echo "$name is required to probe Harbor push scope; refusing to report a" >&2
@@ -141,16 +192,25 @@ done
 umask 077
 cfg=$(mktemp -d)
 trap 'rm -rf "$cfg"' EXIT
-printf 'user = "%s:%s"\n' "$HARBOR_USERNAME" "$HARBOR_PASSWORD" > "$cfg/curlrc"
+printf 'user = "%s:%s"\n' \
+  "$(curlrc_escape "$HARBOR_USERNAME")" "$(curlrc_escape "$HARBOR_PASSWORD")" > "$cfg/curlrc"
 
 echo "probing push scope: $HOST/$REPOSITORY"
 
 response=$(curl -fsS --max-time 30 --config "$cfg/curlrc" \
   "https://$HOST/service/token?service=harbor-registry&scope=repository:$REPOSITORY:push,pull") || {
-  echo "FATAL: the Harbor token endpoint at $HOST rejected the credential." >&2
-  echo "This is an AUTHENTICATION failure, not a scope one: the request never" >&2
-  echo "got far enough to be downgraded. Check HARBOR_USERNAME/HARBOR_PASSWORD" >&2
-  echo "in Blockcast/pkgs. Route a named credential ask; do not widen a grant here." >&2
+  rc=$?
+  if [[ "$(curl_failure_kind "$rc")" == network ]]; then
+    echo "FATAL: could not reach the Harbor token endpoint at $HOST (curl exit $rc)." >&2
+    echo "This is a NETWORK failure -- DNS, connection or timeout. The request" >&2
+    echo "never reached Harbor, so NOTHING is established about the credential" >&2
+    echo "or its scope. Retry. Do not route a credential ask on this." >&2
+  else
+    echo "FATAL: the Harbor token endpoint at $HOST rejected the credential (curl exit $rc)." >&2
+    echo "This is an AUTHENTICATION failure, not a scope one: the request never" >&2
+    echo "got far enough to be downgraded. Check HARBOR_USERNAME/HARBOR_PASSWORD" >&2
+    echo "in Blockcast/pkgs. Route a named credential ask; do not widen a grant here." >&2
+  fi
   exit 1
 }
 
@@ -189,6 +249,20 @@ DECISION=$(scope_decision "$ACTIONS")
 
 echo "granted actions for $REPOSITORY: ${ACTIONS:-<none>}"
 
+# Emitted BEFORE the verdict is acted on, because every arm below exits. The
+# answer a human dispatching this most needs rendered in the Actions summary UI
+# is the one where push is WITHHELD -- and that is precisely the arm that never
+# reached a summary when this block sat at the end of the script.
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  {
+    printf '### Harbor push-scope preflight\n\n'
+    printf -- '- target: `%s/%s`\n' "$HOST" "$REPOSITORY"
+    printf -- '- granted: `%s`\n' "${ACTIONS:-<none>}"
+    printf -- '- verdict: **%s**\n' "$DECISION"
+    printf -- '- nothing was written to any registry\n'
+  } >> "$GITHUB_STEP_SUMMARY"
+fi
+
 case "$DECISION" in
   ok)
     echo "PASS: this credential may push to $HOST/$REPOSITORY."
@@ -219,13 +293,3 @@ case "$DECISION" in
     exit 1
     ;;
 esac
-
-if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  {
-    printf '### Harbor push-scope preflight\n\n'
-    printf -- '- target: `%s/%s`\n' "$HOST" "$REPOSITORY"
-    printf -- '- granted: `%s`\n' "${ACTIONS:-<none>}"
-    printf -- '- verdict: **%s**\n' "$DECISION"
-    printf -- '- nothing was written to any registry\n'
-  } >> "$GITHUB_STEP_SUMMARY"
-fi

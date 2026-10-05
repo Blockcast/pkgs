@@ -88,5 +88,48 @@ check "empty"                         "no"  "$(ok_repo '')"
 check "leading slash"                 "no"  "$(ok_repo '/library/talos-installer')"
 check "whitespace"                    "no"  "$(ok_repo 'library/talos installer')"
 
+# ------------------------------------------------------------------ guard 5
+# Host validation. This one decides where the credential is SENT, not merely
+# what is asked for: curl presents Basic auth preemptively from the curlrc, so
+# an unvalidated host exfiltrates HARBOR_USERNAME/HARBOR_PASSWORD on the first
+# request rather than just misreporting a verdict.
+
+ok_host() { if valid_host "$1"; then echo yes; else echo no; fi; }
+
+check "the default host"              "yes" "$(ok_host 'harbor.blockcast.net')"
+check "the sibling name, same Harbor" "yes" "$(ok_host 'registry.blockcast.net')"
+check "an arbitrary host"             "no"  "$(ok_host 'evil.example')"
+check "loopback with a port"          "no"  "$(ok_host '127.0.0.1:1')"
+check "a port on an allowed name"     "no"  "$(ok_host 'harbor.blockcast.net:8443')"
+check "suffix attack"                 "no"  "$(ok_host 'harbor.blockcast.net.evil.example')"
+check "prefix attack"                 "no"  "$(ok_host 'notharbor.blockcast.net')"
+check "userinfo smuggles a host"      "no"  "$(ok_host 'harbor.blockcast.net@evil.example')"
+check "dots are literal, not any-char" "no" "$(ok_host 'harborxblockcastxnet')"
+check "empty"                         "no"  "$(ok_host '')"
+
+# ------------------------------------------------------------------ guard 6
+# curl failure classification. `curl -f` exits non-zero for an HTTP 4xx AND for
+# never having reached the server, and calling the second "rejected the
+# credential" routes a network blip to a credential ask.
+
+check "DNS failure is network"        "network"    "$(curl_failure_kind 6)"
+check "connection refused is network" "network"    "$(curl_failure_kind 7)"
+check "timeout is network"            "network"    "$(curl_failure_kind 28)"
+check "TLS handshake is network"      "network"    "$(curl_failure_kind 35)"
+check "HTTP 4xx is credential"        "credential" "$(curl_failure_kind 22)"
+check "an unknown status is credential" "credential" "$(curl_failure_kind 99)"
+
+# ------------------------------------------------------------------ guard 7
+# curlrc quoting. A password containing " or \ truncates the config line, and
+# the symptom is an authentication FATAL -- a quoting bug that reads as a
+# credential problem and gets routed as one.
+
+check "an ordinary password is untouched" 'hunter2'    "$(curlrc_escape 'hunter2')"
+check "a double quote is escaped"         'a\"b'       "$(curlrc_escape 'a"b')"
+check "a backslash is escaped"            'a\\b'       "$(curlrc_escape 'a\b')"
+check "backslash escaped before quote"    'a\\\"b'     "$(curlrc_escape 'a\"b')"
+check "the line cannot be truncated"      'x\"\\nuser = \"y' \
+  "$(curlrc_escape 'x"\nuser = "y')"
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

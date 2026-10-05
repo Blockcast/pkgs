@@ -104,4 +104,50 @@ open(path, "w").write(s.replace(old, "  return 0", 1))
 PY
 assert_caught "repository validation removed"
 
+# 5. The host validation -- accept any host, so a dispatch input can redirect
+#    the preemptive-Basic-auth request and hand the Harbor credential to a
+#    host of the dispatcher's choosing.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '  [[ "$host" =~ ^(harbor|registry)\\.blockcast\\.net$ ]]'
+assert old in s, "host validation not found -- update this mutation"
+open(path, "w").write(s.replace(old, "  return 0", 1))
+PY
+assert_caught "host validation removed (credential may be sent anywhere)"
+
+# 6. The curl failure classification -- call every failure a credential
+#    rejection, which is the pre-fix behaviour: a DNS or connect failure then
+#    reports as "rejected the credential" and routes a network blip to a
+#    credential ask.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '''  case "$1" in
+    6|7|28|35) echo network ;;
+    *)         echo credential ;;
+  esac'''
+assert old in s, "curl failure classification not found -- update this mutation"
+open(path, "w").write(s.replace(old, "  echo credential", 1))
+PY
+assert_caught "curl failure classification removed (network reads as credential)"
+
+# 7. The curlrc escaping -- pass the value through, which is the pre-fix
+#    behaviour: a password containing " or \ truncates the config line and
+#    surfaces as an authentication FATAL, diagnosing a quoting bug as a
+#    credential problem.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '''  local value=$1
+  value=${value//\\\\/\\\\\\\\}
+  printf '%s' "${value//\\"/\\\\\\"}"'''
+assert old in s, "curlrc escaping not found -- update this mutation"
+open(path, "w").write(s.replace(old, '  printf \'%s\' "$1"', 1))
+PY
+assert_caught "curlrc escaping removed (a quote truncates the credential line)"
+
 echo "all mutations caught"
