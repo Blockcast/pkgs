@@ -60,14 +60,17 @@ PATTERN='(default:|:[-=?]|[A-Z_]+[:=]|[A-Za-z_]+=)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+|
 # undeliberate widening the paragraph above forbids.
 #
 # The same anchoring is needed on the *left*, and the filter below spells it
-# `(^|[^-.A-Za-z0-9_])` rather than leaving the alternation bare. Unanchored, a
-# name merely *ending* in an entry was adopted as the pin -- `MY_CRANE_VER:`
-# and `XCRANE_VERSION:` both went silently clean -- which is the mirror image
-# of the prefix wildcard this paragraph declines. `-` and `.` are in the class
-# because the names here are not only shell names: a shell name is word
-# characters only, but a YAML key may hold either, so `FOO-CRANE_VER:` is a
-# reachable name and `[^A-Za-z0-9_]` alone would still adopt it. One probe per
-# character below, same as the value class.
+# `(^|[^-.:=?A-Za-z0-9_])` rather than leaving the alternation bare.
+# Unanchored, a name merely *ending* in an entry was adopted as the pin --
+# `MY_CRANE_VER:` and `XCRANE_VERSION:` both went silently clean -- which is
+# the mirror image of the prefix wildcard this paragraph declines. `-` and `.`
+# are in the class because the names here are not only shell names: a shell
+# name is word characters only, but a YAML key may hold either, so
+# `FOO-CRANE_VER:` is a reachable name and `[^A-Za-z0-9_]` alone would still
+# adopt it. `:`, `=` and `?` are in it for the opposite reason -- they can
+# *terminate* a $PATTERN alternative, and the anchor eats the character it
+# matches; see the paragraph by the filter. One probe per character below,
+# same as the value class.
 #
 # The filter is token-scoped, not line-scoped: it redacts each pin *and its
 # value* and re-tests what is left, so a real literal sharing a physical line
@@ -172,8 +175,8 @@ scan() {
     # is absurd as a filename, and the narrower the path test the more ordinary
     # paths it fails on.
     #
-    # The `(^|[^-.A-Za-z0-9_])` that anchors the name on the left is part of the
-    # match, so the gsub eats that one leading character along with the pin.
+    # The `(^|[^-.:=?A-Za-z0-9_])` that anchors the name on the left is part of
+    # the match, so the gsub eats that one leading character along with the pin.
     # That is why the strip has to run *first*: against the prefixed string the
     # character before a column-0 pin is the `path:line:` prefix's own trailing
     # colon, the gsub eats it, the strip then fails and the fail-closed arm reds
@@ -181,21 +184,28 @@ scan() {
     # Pkgfile, which is wrong advice for one. Stripping first also makes the `^`
     # alternative mean what it reads as; against the prefix it could never fire.
     # On the content the eaten character is always a separator -- a word
-    # character there is what the anchor refuses -- and dropping one cannot turn
-    # a hit into a miss. Three of the four alternatives opening $PATTERN's first
-    # arm start at a word character, and its second arm is `^`-anchored over
-    # leading whitespace; `:[-=?]` is the one that opens on a separator, and its
-    # colon can never *be* the eaten character. The eaten one is whatever
-    # immediately precedes an $ALLOW name, every entry starts `[A-Za-z]`, and
-    # that arm requires `[-=?]` next -- disjoint sets, so the colon it needs is
-    # never the one consumed. Measured: `${x:-v1.13.4}CRANE_VER=v0.20.2` reds
-    # (probed below), as does `A=${B:-v1.13.4} CRANE_VER=v0.20.2`, while the
-    # real pin `${CRANE_VER:-v0.20.2}` stays clean.
+    # character there is what the anchor refuses. Dropping one *can* turn a hit
+    # into a miss, which is why `:=?` are in the class alongside `-` and `.`.
+    # The earlier argument here reasoned about the character each $PATTERN
+    # alternative *opens* on; the eaten character is whatever immediately
+    # precedes an $ALLOW name, and that can just as well be an alternative's
+    # *trailing* separator -- `default:`, `[A-Z_]+[:=]` and `[A-Za-z_]+=` all
+    # end in one, and so does `:[-=?]`. Eating it deletes the marker and a real
+    # literal on the same line is then missed: `TALOS=CRANE_VER=v0.20.2
+    # v1.13.4` went clean while the pre-anchor guard red it (Ally, pkgs#30).
+    # So the class excludes every character that can *terminate* an
+    # alternative. Those shapes now match no pin at all, fall through to the
+    # whole-line re-test, and red -- fail-closed, the same direction as the
+    # unparseable-prefix arm above. One probe per character below.
+    # Still true and still measured: `${x:-v1.13.4}CRANE_VER=v0.20.2` reds (the
+    # `}` it eats terminates nothing), as does
+    # `A=${B:-v1.13.4} CRANE_VER=v0.20.2`, while the real pin
+    # `${CRANE_VER:-v0.20.2}` stays clean and
     # `TALOS=v1.13.4,CRANE_VER=v0.20.2` loses the comma and still reds.
     PAT="$PATTERN" AL="$ALLOW" awk '
       BEGIN {
         pat = ENVIRON["PAT"]
-        pin = "(^|[^-.A-Za-z0-9_])(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:],;&|{}]*"
+        pin = "(^|[^-.:=?A-Za-z0-9_])(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:],;&|{}]*"
       }
       {
         rest = $0
@@ -305,17 +315,16 @@ self_test() {
   probe "tool pin, longer name"   pass  '          CRANE_VERSION: v0.21.2'
   # ...and the other end of the same anchoring. A name that merely *ends* in an
   # entry is not that tool's pin, so its value is a fleet literal and must red.
-  # Goes red if `(^|[^-.A-Za-z0-9_])` is dropped from the pin regex: the bare
+  # Goes red if `(^|[^-.:=?A-Za-z0-9_])` is dropped from the pin regex: the bare
   # alternation matches mid-name and the line is redacted away silently. The
   # probe above is the positive control -- the real pins must stay quiet.
   probe "name merely ending in a pin's name" catch \
     '          MY_CRANE_VER: v1.13.4'
-  # The separator the left-anchor eats is never load-bearing for a $PATTERN
-  # match. `:[-=?]` is the only opening alternative that starts on a separator,
-  # and its colon cannot be the eaten one -- the eaten character precedes an
-  # $ALLOW name, every entry starts `[A-Za-z]`, and this arm needs `[-=?]`
-  # there. So the shell default keeps its colon and still reds with a real pin
-  # butted against it, having lost only the `}`.
+  # A separator the left-anchor eats that terminates no $PATTERN alternative is
+  # not load-bearing: here it is the `}`, so the shell default keeps its colon
+  # and still reds with a real pin butted against it. (A separator that *does*
+  # terminate an alternative is load-bearing and is excluded from the anchor
+  # class -- see the three probes below.)
   #
   # Lowercase `x` is load-bearing: with `X` the leftover `X:` also matches the
   # `[A-Z_]+[:=]` arm, so the probe would red for the wrong reason and stop
@@ -331,6 +340,18 @@ self_test() {
     '          FOO-CRANE_VER: v1.13.4'
   probe "dotted name ending in a pin's name" catch \
     '          foo.CRANE_VER: v1.13.4'
+  # The three separators that can *terminate* a $PATTERN alternative, one probe
+  # each for the same reason. These are the other direction: not a name that
+  # over-matches $ALLOW, but a marker whose own trailing separator the anchor
+  # would eat, deleting the marker and missing the literal beside it. Each is
+  # clean at pkgs#30's first head and reds once its character joins the class,
+  # so dropping any one of `:`, `=`, `?` on its own is caught here.
+  probe "eaten separator is an equals marker's own" catch \
+    'TALOS=CRANE_VER=v0.20.2 v1.13.4' c.sh
+  probe "eaten separator is a colon marker's own"  catch \
+    'TALOS:CRANE_VER=v0.20.2 v1.13.4' c.sh
+  probe "eaten separator closes the colon arm"     catch \
+    ':?CRANE_VER=v0.20.2 v1.13.4' c.sh
   # BLO-40232: the pin is scoped to its own token, so a real literal sharing
   # the line still reds. Goes red if the redact-and-re-test awk is reverted to
   # a `grep -v` over the line -- the fail-open this probe exists for. The
