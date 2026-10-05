@@ -35,9 +35,10 @@ on:
       overwrite_harbor_tag:
         description: >-
           Repoint an EXISTING harbor.blockcast.net/library/talos-installer tag at
-          this build. Off by default: the rollout runbook names rollback images
-          by tag, so repointing one silently changes what a documented rollback
-          resolves to. Promoting an identical digest is a no-op and needs no flag.
+          this build. Off by default: the runbook reads the digest it pins through
+          this tag, so repointing one makes that read hand out this build for nodes
+          already rolled on the old one. Promoting an identical digest is a no-op
+          and needs no flag.
         default: false
         type: boolean
 concurrency:
