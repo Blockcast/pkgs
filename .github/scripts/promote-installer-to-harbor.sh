@@ -37,7 +37,9 @@ set -euo pipefail
 # Split out as a pure function with no registry access so it can be exercised
 # directly -- see test-promote-installer-to-harbor.sh. A guard with no failing
 # mutation is a comment, and this one is the difference between re-publishing a
-# tag the runbook resolves digests through and refusing to.
+# tag the runbook resolves digests through and refusing to. That read is
+# Blockcast/onprem-k8s .planning/2026-07-17-amt-6.18.38-secureboot-rollout-runbook.md
+# §1 -- re-verify there rather than re-deriving this premise (BLO-39281).
 #
 #   existing  destination digest, empty when the tag does not exist
 #   source    digest this run pushed
