@@ -126,8 +126,8 @@ import sys
 path = sys.argv[1]
 s = open(path).read()
 old = '''  case "$1" in
-    6|7|28|35) echo network ;;
-    *)         echo credential ;;
+    5|6|7|28|35|56|60|77) echo network ;;
+    *)                    echo credential ;;
   esac'''
 assert old in s, "curl failure classification not found -- update this mutation"
 open(path, "w").write(s.replace(old, "  echo credential", 1))
@@ -144,10 +144,95 @@ path = sys.argv[1]
 s = open(path).read()
 old = '''  local value=$1
   value=${value//\\\\/\\\\\\\\}
-  printf '%s' "${value//\\"/\\\\\\"}"'''
+  value=${value//\\"/\\\\\\"}
+  value=${value//$'\\r'/\\\\r}
+  printf '%s' "${value//$'\\n'/\\\\n}"'''
 assert old in s, "curlrc escaping not found -- update this mutation"
 open(path, "w").write(s.replace(old, '  printf \'%s\' "$1"', 1))
 PY
 assert_caught "curlrc escaping removed (a quote truncates the credential line)"
+
+# 8. The curl_failure_kind CALL SITE -- invert the branch so a network failure
+#    takes the credential arm. Distinct from mutation 6, and that distinction
+#    is the whole point: 6 cuts the FUNCTION, this cuts the WIRING. Reviewed at
+#    dce18e5, this exact mutation left the suite AND this sweep green, because
+#    nothing executed the script. It reproduces the pre-fix behaviour that
+#    mutation 6 only appears to defend against.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '  if [[ "$(curl_failure_kind "$rc")" == network ]]; then'
+assert old in s, "curl_failure_kind call site not found -- update this mutation"
+new = '  if [[ "$(curl_failure_kind "$rc")" == credential ]]; then'
+open(path, "w").write(s.replace(old, new, 1))
+PY
+assert_caught "curl_failure_kind call site inverted (network takes the credential arm)"
+
+# 9. The summary PLACEMENT -- move the block back below the `case`. Every arm
+#    of that case exits, so from there the summary is unreachable on exactly
+#    the two FAIL verdicts a dispatcher needs rendered. This regressed once,
+#    was fixed at dce18e5, and until now had nothing watching it.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+start = s.index('if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then')
+end = s.index('case "$DECISION" in\n  ok)')
+block = s[start:end]
+assert 'GITHUB_STEP_SUMMARY' in block, "summary block not found -- update this mutation"
+open(path, "w").write(s[:start] + s[end:] + "\n" + block)
+PY
+assert_caught "summary moved after the case (unreachable on both FAIL arms)"
+
+# 10-12 are NARROW reverts: each cuts one behaviour out of a function that
+# mutations 6/7 already cut wholesale. That is deliberate. A coarse mutation
+# proves the function is tested; it does not prove each branch inside it is,
+# and "simplify this case list" is a much likelier future edit than "delete
+# this function".
+
+# 10. The TLS-trust codes -- narrow the network arm back to DNS/connect/timeout
+#     so an expired Harbor certificate reports as "rejected the credential" and
+#     files a CTO ask over a cert renewal.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = r'    5|6|7|28|35|56|60|77) echo network ;;'
+assert old in s, "network arm not found -- update this mutation"
+open(path, "w").write(s.replace(old, r'    6|7|28|35) echo network ;;', 1))
+PY
+assert_caught "TLS-trust codes dropped from the network arm (a lapsed cert reads as a credential fault)"
+
+# 11. The CR/LF escaping -- leave \\ and \" escaped but let a real newline
+#     through, so a password containing one closes the user directive and makes
+#     the remainder a second curlrc directive of its own choosing.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+# Built by concatenation rather than one triple-quoted literal: the second
+# line ends in a double quote, which cannot sit flush against a closing """.
+old = (r"""  value=${value//$'\r'/\\r}""" + "\n"
+       + r"""  printf '%s' "${value//$'\n'/\\n}" """.rstrip())
+assert old in s, "CR/LF escaping not found -- update this mutation"
+new = r"""  printf '%s' "$value" """.rstrip()
+open(path, "w").write(s.replace(old, new, 1))
+PY
+assert_caught "CR/LF escaping removed (a newline in the password injects a curlrc directive)"
+
+# 12. The credential-ask block in the summary -- leave the verdict but drop the
+#     actionable half, which is the state the reviewer found at dce18e5: the
+#     ask existed only on stderr, where the person reading the Actions summary
+#     UI never sees it.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+start = s.index('    if [[ -n "$ASK_NEEDS" ]]; then')
+end = s.index('    fi\n', start) + len('    fi\n')
+open(path, "w").write(s[:start] + s[end:])
+PY
+assert_caught "credential ask dropped from the summary (actionable half is log-only again)"
 
 echo "all mutations caught"

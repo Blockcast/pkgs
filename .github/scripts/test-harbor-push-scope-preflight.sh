@@ -119,6 +119,14 @@ check "TLS handshake is network"      "network"    "$(curl_failure_kind 35)"
 check "HTTP 4xx is credential"        "credential" "$(curl_failure_kind 22)"
 check "an unknown status is credential" "credential" "$(curl_failure_kind 99)"
 
+# TLS trust. An expired or untrusted Harbor certificate is routine and means
+# the handshake never completed, so nothing is established about the
+# credential. Calling these "credential" files a CTO ask over a lapsed cert.
+check "untrusted peer cert is network" "network" "$(curl_failure_kind 60)"
+check "unreadable CA bundle is network" "network" "$(curl_failure_kind 77)"
+check "proxy resolution is network"    "network" "$(curl_failure_kind 5)"
+check "truncated response is network"  "network" "$(curl_failure_kind 56)"
+
 # ------------------------------------------------------------------ guard 7
 # curlrc quoting. A password containing " or \ truncates the config line, and
 # the symptom is an authentication FATAL -- a quoting bug that reads as a
@@ -128,8 +136,126 @@ check "an ordinary password is untouched" 'hunter2'    "$(curlrc_escape 'hunter2
 check "a double quote is escaped"         'a\"b'       "$(curlrc_escape 'a"b')"
 check "a backslash is escaped"            'a\\b'       "$(curlrc_escape 'a\b')"
 check "backslash escaped before quote"    'a\\\"b'     "$(curlrc_escape 'a\"b')"
-check "the line cannot be truncated"      'x\"\\nuser = \"y' \
+
+# Named for what it actually passes: the two characters b-a-c-k-s-l-a-s-h-n,
+# not a newline. It pins that the escaping is literal and does not interpret.
+check "a literal backslash-n is escaped, not interpreted" 'x\"\\nuser = \"y' \
   "$(curlrc_escape 'x"\nuser = "y')"
+
+# A REAL newline, which the case above does not cover and which is worse than
+# truncation: the curlrc is parsed per line, so the tail becomes a second
+# directive rather than being discarded.
+check "a real newline cannot start a second directive" 'x\nuser = \"y' \
+  "$(curlrc_escape "$(printf 'x\nuser = "y')")"
+check "a real carriage return is escaped" 'a\rb' \
+  "$(curlrc_escape "$(printf 'a\rb')")"
+
+# ------------------------------------------------------------------ guard 8
+# The CALL SITES. Everything above this line sources the script
+# HARBOR_PREFLIGHT_LIB_ONLY=1 and tests the pure functions in isolation. A
+# correct function wired up backwards is invisible to all of it, and that is
+# not hypothetical: reviewed at dce18e5, inverting the curl_failure_kind call
+# site and moving the summary block back after the `case` BOTH left the whole
+# suite and the whole mutation sweep green. Two guards with nothing watching
+# them. This section runs the script itself so they have something.
+#
+# No Harbor, no network, no credential: a `curl` stub earlier on PATH answers
+# with a JWT built here, so what gets exercised is the script's own
+# decode -> decide -> report path.
+
+stub=$(mktemp -d)
+trap 'rm -rf "$stub"' EXIT
+cat > "$stub/curl" <<'STUB'
+#!/usr/bin/env bash
+# Test stub. Never makes a request: exits STUB_CURL_EXIT when set, else prints
+# STUB_CURL_BODY. Ignores its arguments, including the --config curlrc.
+[[ -n "${STUB_CURL_EXIT:-}" ]] && exit "$STUB_CURL_EXIT"
+printf '%s' "${STUB_CURL_BODY:-}"
+STUB
+chmod +x "$stub/curl"
+
+# A Harbor token response whose access claim grants $2 on repository $1.
+# Mirrors what the token endpoint mints: header.payload.signature, payload
+# base64url and unpadded, exactly as the script's decoder expects.
+token_json() {
+  python3 - "$1" "$2" <<'PY'
+import base64, json, sys
+repo, actions = sys.argv[1], [a for a in sys.argv[2].split(",") if a]
+claims = {"access": [{"type": "repository", "name": repo, "actions": actions}]}
+payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+print(json.dumps({"token": "header.%s.signature" % payload}))
+PY
+}
+
+# Runs the script against the stub. Sets RC / OUT / SUMMARY.
+run_preflight() {
+  local summary_file; summary_file=$(mktemp)
+  RC=0
+  OUT=$(PATH="$stub:$PATH" HARBOR_USERNAME=u HARBOR_PASSWORD=p \
+        GITHUB_STEP_SUMMARY="$summary_file" bash "$script" 2>&1) || RC=$?
+  SUMMARY=$(cat "$summary_file")
+  rm -f "$summary_file"
+}
+
+has() { case "$2" in *"$1"*) echo yes ;; *) echo no ;; esac; }
+
+# -- the three verdict arms: exit code, message, and summary reachability.
+
+export STUB_CURL_BODY; unset STUB_CURL_EXIT
+
+STUB_CURL_BODY=$(token_json "$REPO" "pull,push"); run_preflight
+check "ok arm exits 0"                  "0"   "$RC"
+check "ok arm says PASS"                "yes" "$(has 'PASS: this credential may push' "$OUT")"
+check "ok arm summarises the verdict"   "yes" "$(has 'verdict: **ok**' "$SUMMARY")"
+check "ok arm files no credential ask"  "no"  "$(has 'Named credential ask' "$SUMMARY")"
+
+STUB_CURL_BODY=$(token_json "$REPO" "pull"); run_preflight
+check "no-push arm exits 1"             "1"   "$RC"
+check "no-push arm says NOT push"       "yes" "$(has 'but NOT push' "$OUT")"
+check "no-push arm reaches the summary" "yes" "$(has 'verdict: **no-push**' "$SUMMARY")"
+check "no-push summary carries the ask" "yes" "$(has 'needs: `push on Harbor project' "$SUMMARY")"
+
+STUB_CURL_BODY=$(token_json "other/thing" "pull,push"); run_preflight
+check "no-grant arm exits 1"             "1"   "$RC"
+check "no-grant arm says not mentioned"  "yes" "$(has 'does not mention' "$OUT")"
+check "no-grant arm reaches the summary" "yes" "$(has 'verdict: **no-grant**' "$SUMMARY")"
+check "no-grant summary asks for visibility" "yes" \
+  "$(has 'needs: `visibility + push' "$SUMMARY")"
+
+# -- the curl_failure_kind CALL SITE. The function is asserted in guard 6; what
+# these pin is that the right branch is wired to the right FATAL text. A
+# network blip must never print the credential ask.
+
+STUB_CURL_BODY=""; export STUB_CURL_EXIT
+
+STUB_CURL_EXIT=6; run_preflight
+check "DNS failure exits 1"               "1"   "$RC"
+check "DNS failure names a NETWORK fault" "yes" "$(has 'This is a NETWORK failure' "$OUT")"
+check "DNS failure routes no credential ask" "no" \
+  "$(has 'Route a named credential ask' "$OUT")"
+
+STUB_CURL_EXIT=60; run_preflight
+check "untrusted cert names a NETWORK fault" "yes" "$(has 'This is a NETWORK failure' "$OUT")"
+
+STUB_CURL_EXIT=22; run_preflight
+check "HTTP 4xx exits 1"                  "1"   "$RC"
+check "HTTP 4xx names an AUTH failure"    "yes" \
+  "$(has 'This is an AUTHENTICATION failure' "$OUT")"
+
+unset STUB_CURL_EXIT
+
+# -- argument validation, at the call site rather than the function.
+
+RC=0; OUT=$(PATH="$stub:$PATH" HARBOR_USERNAME=u HARBOR_PASSWORD=p \
+  bash "$script" --host 127.0.0.1:1 2>&1) || RC=$?
+check "a rejected host exits 2"            "2"   "$RC"
+check "a rejected host is never contacted" "yes" \
+  "$(has 'refusing to send the Harbor credential to: 127.0.0.1:1' "$OUT")"
+
+RC=0; OUT=$(PATH="$stub:$PATH" bash "$script" 2>&1) || RC=$?
+check "a missing credential exits 2"       "2"   "$RC"
+check "a missing credential refuses a verdict" "yes" \
+  "$(has 'refusing to report a' "$OUT")"
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

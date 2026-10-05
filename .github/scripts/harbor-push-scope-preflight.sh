@@ -121,15 +121,22 @@ valid_host() {
 # Did curl fail before Harbor ever answered?
 #
 # `curl -f` exits non-zero both for an HTTP 4xx (22) and for never having
-# reached the server at all (6 DNS, 7 connect, 28 timeout, 35 TLS). Reporting
-# the second as "rejected the credential" routes a network problem to a
-# credential ask -- the one answer this script otherwise refuses to guess.
+# reached the server at all. Reporting the second as "rejected the credential"
+# routes a network problem to a credential ask -- the one answer this script
+# otherwise refuses to guess.
+#
+# The TLS-trust codes (60 untrusted peer certificate, 77 unreadable CA bundle)
+# belong on this side with DNS and connect: an expired Harbor certificate is an
+# ordinary, recurring operational event, and the handshake failing means the
+# request never reached Harbor, so nothing whatever is established about the
+# credential. Classifying those as "credential" would send a CTO ask every time
+# a cert lapsed, which is the exact mis-routing this function exists to prevent.
 #
 # echoes exactly one of: network | credential
 curl_failure_kind() {
   case "$1" in
-    6|7|28|35) echo network ;;
-    *)         echo credential ;;
+    5|6|7|28|35|56|60|77) echo network ;;
+    *)                    echo credential ;;
   esac
 }
 
@@ -139,10 +146,18 @@ curl_failure_kind() {
 # either would otherwise truncate the line -- and the symptom is an
 # authentication FATAL, i.e. a quoting bug wearing the costume of a credential
 # problem. Backslash first, or the escapes we add get escaped too.
+#
+# CR and LF are escaped for a strictly worse reason than truncation: the curlrc
+# is parsed a line at a time, so a newline inside the password does not merely
+# cut the line short, it makes the remainder a SECOND directive of the
+# password-holder's choosing. curl recognises \n and \r inside a quoted value,
+# so this round-trips to the original bytes.
 curlrc_escape() {
   local value=$1
   value=${value//\\/\\\\}
-  printf '%s' "${value//\"/\\\"}"
+  value=${value//\"/\\\"}
+  value=${value//$'\r'/\\r}
+  printf '%s' "${value//$'\n'/\\n}"
 }
 
 # Sourced by the test for the functions above; skip the side-effecting half.
@@ -249,6 +264,18 @@ DECISION=$(scope_decision "$ACTIONS")
 
 echo "granted actions for $REPOSITORY: ${ACTIONS:-<none>}"
 
+# The named credential ask, written once. Both the Actions summary below and
+# the FAIL arms further down quote it, and they must not drift: the summary is
+# what the person who dispatched this actually reads, the stderr block is what
+# gets pasted into the ask. Two hand-maintained copies of the same sentence is
+# how those stop matching.
+ASK_CREDENTIAL="HARBOR_USERNAME/HARBOR_PASSWORD in Blockcast/pkgs"
+case "$DECISION" in
+  no-push)  ASK_NEEDS="push on Harbor project 'library' (repository $REPOSITORY)" ;;
+  no-grant) ASK_NEEDS="visibility + push on Harbor project 'library'" ;;
+  *)        ASK_NEEDS="" ;;
+esac
+
 # Emitted BEFORE the verdict is acted on, because every arm below exits. The
 # answer a human dispatching this most needs rendered in the Actions summary UI
 # is the one where push is WITHHELD -- and that is precisely the arm that never
@@ -260,6 +287,13 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     printf -- '- granted: `%s`\n' "${ACTIONS:-<none>}"
     printf -- '- verdict: **%s**\n' "$DECISION"
     printf -- '- nothing was written to any registry\n'
+    # The verdict alone tells the dispatcher it failed, not what to do about
+    # it. The ask is the actionable half and was previously log-only.
+    if [[ -n "$ASK_NEEDS" ]]; then
+      printf '\n**Named credential ask -- route to the CTO. Do not widen a grant here.**\n\n'
+      printf -- '- credential: `%s`\n' "$ASK_CREDENTIAL"
+      printf -- '- needs: `%s`\n' "$ASK_NEEDS"
+    fi
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
@@ -273,8 +307,8 @@ case "$DECISION" in
     echo "Harbor named the repository and withheld push, so the principal can see" >&2
     echo "the project and its member role is too low -- not a visibility problem." >&2
     echo "This is the named credential ask BLO-39281 anticipated:" >&2
-    echo "  credential: HARBOR_USERNAME/HARBOR_PASSWORD in Blockcast/pkgs" >&2
-    echo "  needs:      push on Harbor project 'library' (repository $REPOSITORY)" >&2
+    echo "  credential: $ASK_CREDENTIAL" >&2
+    echo "  needs:      $ASK_NEEDS" >&2
     echo "Route it to the CTO. Do not widen the grant here, and do not restore the" >&2
     echo "admin-credential skopeo recipe the rollout runbook deleted." >&2
     exit 1
@@ -283,8 +317,8 @@ case "$DECISION" in
     echo "FAIL: Harbor issued a token that does not mention $REPOSITORY at all." >&2
     echo "Distinct from a withheld push: the principal likely cannot see the" >&2
     echo "project or the repository, so granting push alone may not be the fix." >&2
-    echo "  credential: HARBOR_USERNAME/HARBOR_PASSWORD in Blockcast/pkgs" >&2
-    echo "  needs:      visibility + push on Harbor project 'library'" >&2
+    echo "  credential: $ASK_CREDENTIAL" >&2
+    echo "  needs:      $ASK_NEEDS" >&2
     echo "Route a named credential ask to the CTO rather than widening a grant here." >&2
     exit 1
     ;;
