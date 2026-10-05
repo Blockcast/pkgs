@@ -15,26 +15,33 @@
 # compose-signed-installer job on 2026-10-04. The build uses the job's own dind
 # daemon, so it does not depend on the in-cluster remote buildkit endpoints.
 #
-# Fork PRs never run here. The repo is public and its fork-PR approval policy
-# is `first_time_contributors`, so a fork PR from anyone who has contributed
-# before would run its own build.sh/Dockerfile on the self-hosted, privileged
-# arc-dind runner with no approval. `check` therefore only runs PRs whose head
-# is in this repository, and only `publish` (main) gets packages: write.
+# Fork PRs: `check` only runs PRs whose head is in this repository, so this
+# workflow as written never sends a fork PR to the self-hosted, privileged
+# arc-dind runner, and only `publish` (main) gets packages: write. That `if:`
+# is NOT a security boundary: a pull_request run uses the workflow file from
+# the PR, so a fork can delete it, or add any workflow with runs-on: arc-dind.
+# The real control is the repo's fork-PR approval policy, which was
+# `first_time_contributors` on 2026-10-05 (a fork PR from anyone who has
+# contributed before runs without approval); `all_external_contributors`
+# closes that.
 
 name: harbor-registry-photon
 
 on:
+  # README-only changes do not change the image: a PR would rebuild it on the
+  # privileged runner for nothing, and a main push would hit build.sh's "tag
+  # already exists" refusal unless PATCH_REVISION is bumped. main has no
+  # required status checks, so skipping the run cannot strand a PR.
   pull_request:
     branches:
       - main
     paths:
       - 'harbor-registry-photon/**'
+      - '!harbor-registry-photon/README.md'
       - '.github/workflows/harbor-registry-photon.yaml'
   push:
     branches:
       - main
-    # README-only changes do not change the image; publishing them would hit
-    # build.sh's "tag already exists" refusal unless PATCH_REVISION is bumped.
     paths:
       - 'harbor-registry-photon/**'
       - '!harbor-registry-photon/README.md'

@@ -8,10 +8,12 @@
 image — entrypoint, user, healthcheck, volumes, the other files — is the stock
 image, byte for byte.
 
-Published as `ghcr.io/blockcast/harbor-registry-photon:v2.14.0-taglookup.2`
-(`./build.sh --print-tag`). **Do not deploy `v2.14.0-taglookup.1`:** it was
-published before deviation 1 below existed, so a cancelled manifest `DELETE`
-can answer `202` and leave tags pointing at the deleted manifest.
+Published as `ghcr.io/blockcast/harbor-registry-photon:v2.14.0-taglookup.3`
+(`./build.sh --print-tag`). **Do not deploy `v2.14.0-taglookup.1` or `.2`.**
+Both were published before deviation 1 below was complete. With either, a
+manifest `DELETE` whose request is cancelled mid-cleanup leaves tags pointing
+at the deleted manifest. `.1` untags only some of them and answers `202`; `.2`
+untags none of them and answers `500`, which nobody sees.
 
 ## Why
 
@@ -56,19 +58,27 @@ fix this.**
   hand-rolled worker pool so the code stays line-for-line comparable with
   upstream, which is what makes a future rebase or upstream sync mechanical.
 
-**Two deliberate deviations from upstream.** Both restore the fail-closed
-behaviour of the serial code upstream replaced; without them a manifest
-`DELETE` can answer `202 Accepted` while tags still point at the deleted
-manifest.
+**Two deliberate deviations from upstream.** Without them a manifest `DELETE`
+can report success while tags still point at the deleted manifest.
 
-1. **Cancelled lookup.** Upstream's `Lookup` shadows `ctx` with the errgroup's
-   context and stops launching link reads once it is done; `g.Wait()` then
-   returns nil and `Lookup` returns the tags read so far with no error. The
-   handler's context is the request's, so a client disconnect or a jobservice
-   timeout cancels it after `DeleteManifest` has already deleted the manifest;
-   upstream then untags only that partial set and writes `202`. Here `Lookup`
-   keeps the caller's context and, after `g.Wait()`, returns its error if it
-   is done.
+1. **Cancelled request.** Upstream's `Lookup` shadows `ctx` with the
+   errgroup's context and stops launching link reads once it is done;
+   `g.Wait()` then returns nil and `Lookup` returns the tags read so far with
+   no error. The handler's context is the request's, so a client disconnect or
+   a jobservice timeout cancels it after `DeleteManifest` has already deleted
+   the manifest; upstream then untags only that partial set. Two changes:
+   - `Lookup` keeps the caller's context and, after `g.Wait()`, returns its
+     error if it is done — never a partial set, for any caller.
+   - `DeleteManifest` runs the tag lookup and untag that follow a successful
+     manifest delete on `context.WithoutCancel(request context)`. Failing the
+     request instead would not help: the manifest is already gone, the client
+     that cancelled never sees the error, and Harbor GC retries the `DELETE`
+     (`src/jobservice/job/impl/gc/garbage_collection.go`, v2.14.0), gets `404`
+     and counts that as success — so every tag would be left pointing at the
+     deleted manifest. Finishing the cleanup is also what the stock binary
+     does on S3 in practice: this release's s3-aws driver calls the AWS SDK
+     without the request context (`S3.GetObject`, `S3.ListObjects`,
+     `S3.DeleteObjects`), so a disconnect does not stop it.
 2. **Failed untag.** Upstream's concurrent untag loop assigns the collected
    errors to the response and then writes `202 Accepted` anyway. Here any
    `Untag` error means no `202`.
@@ -92,15 +102,17 @@ Ported: upstream's `configuration` test for the `tag` section. Added:
 | `TestNewAppTagConcurrencyLimitConfig` | config validation: absent/0/positive accepted; string and negative panic |
 | `TestDeleteManifestUntagsAllReferencingTags` | a manifest referenced by `4 x GOMAXPROCS + 1` tags deletes with 202 and leaves no referencing tag |
 | `TestDeleteManifestUntagFailureFailsClosed` | deviation 2: failing untag → no 202 |
-| `TestDeleteManifestCancelledRequestNot202` | deviation 1: a `DELETE` whose request context is cancelled during the tag lookup → no 202 (500 `context canceled`) |
+| `TestDeleteManifestCancelledRequestUntagsAll` | deviation 1: a `DELETE` whose request context is cancelled during the tag lookup still untags every referencing tag (`4 x GOMAXPROCS + 2` tags) and answers 202 |
 
 Negative controls were run: with `Lookup` reverted to the serial loop the
 bounded test never completes (`go test -timeout` fires); with upstream's
 verbatim `imh.Errors = errs` + 202 the fail-closed test fails with "DELETE
 returned 202 Accepted although every Untag failed"; with upstream's verbatim
-`Lookup` all three cancellation tests fail, each with a partial or empty tag
-set and no error, or a `202` with tags still referencing the deleted manifest
-(the counts depend on `GOMAXPROCS` and scheduling).
+`Lookup` all three cancellation tests fail (a partial or empty tag set with no
+error, or tags still referencing the deleted manifest; the counts depend on
+`GOMAXPROCS` and scheduling); with `Lookup` fixed but the handler's cleanup
+still on the request context, the handler test fails with every tag left
+referencing the deleted manifest.
 
 The Dockerfile runs `go vet -printf=false` and `go test` on `configuration`,
 `registry/storage` and `registry/handlers` (plus a `-race` pass of the new
@@ -128,7 +140,7 @@ it identifies itself:
 
 ```
 $ registry_DO_NOT_USE_GC --version
-/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-23-g0c62ec3e+blockcast-taglookup.2
+/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-23-g0c62ec3e+blockcast-taglookup.3
 ```
 
 `REVISION` is `<DISTRIBUTION_SHA>+patch.sha256.<sha256 of the patch files>`.
@@ -147,10 +159,12 @@ reports the patched string.
 `--push` never repoints a published tag: change anything here, bump
 `PATCH_REVISION`. That includes the workflow file — a merge to `main` that
 touches it re-runs `--push`, which stops on the existing tag and turns `main`
-red. The one exception is this README: `main` pushes that change only
-`README.md` do not trigger the workflow. CI (`.github/workflows/harbor-registry-photon.yaml`) runs
-`--check` on pull requests whose head is in this repository (fork PRs never
-reach the privileged self-hosted runner) and `--push` on `main`, in a separate
+red. The one exception is this README: pushes and pull requests that change
+only `README.md` do not trigger the workflow. CI (`.github/workflows/harbor-registry-photon.yaml`) runs
+`--check` on pull requests whose head is in this repository (that keeps the
+unmodified workflow off the privileged self-hosted runner for fork PRs, but a
+fork PR can edit the workflow; the real control is the repo's fork-PR approval
+policy, see the workflow header) and `--push` on `main`, in a separate
 job that alone holds `packages: write`, and writes the pushed digest to the job
 summary. Deploy by that digest, not by tag.
 

@@ -1,4 +1,4 @@
-From caef49f5546aec553d085ba8d43855f5c9bad689 Mon Sep 17 00:00:00 2001
+From 34e93dec077d09dc3d8514c383fd8949c7ee0278 Mon Sep 17 00:00:00 2001
 From: Players Engineer <omar@blockcast.network>
 Date: Sun, 4 Oct 2026 21:04:50 +0300
 Subject: [PATCH] registry: concurrent bounded tag lookup and untag (backport
@@ -26,17 +26,24 @@ count times the storage backend's per-object round trip.
 - Vendors golang.org/x/sync/errgroup at v0.3.0 (93782cc8), the version
   upstream's go.mod pinned at a2afe23f38, recorded in vendor.conf.
 
-Deliberate deviations from upstream, both restoring the fail-closed
-behaviour of the serial code this replaces:
+Deliberate deviations from upstream, both so that a manifest DELETE
+never reports success while tags still point at the deleted manifest:
 
-1. Cancelled lookup. Upstream shadows ctx with the errgroup's context and
-   stops launching link reads once it is done; g.Wait() then returns nil
-   and Lookup returns the tags read so far with no error. The request
+1. Cancelled request. Upstream shadows ctx with the errgroup's context
+   and stops launching link reads once it is done; g.Wait() then returns
+   nil and Lookup returns the tags read so far with no error. The request
    context is cancelled on client disconnect or caller timeout, so
    DeleteManifest (which has already deleted the manifest) untags only a
-   partial set and answers 202, leaving the other tags pointing at the
-   deleted manifest. Here Lookup keeps the caller's context and, after
-   g.Wait(), returns its error if it is done -- never a partial set.
+   partial set, leaving the other tags pointing at the deleted manifest.
+   Here Lookup keeps the caller's context and, after g.Wait(), returns its
+   error if it is done -- never a partial set, for any caller. And
+   DeleteManifest runs the lookup and untag that follow a successful
+   manifest delete on context.WithoutCancel(request context): failing the
+   request instead would leave every tag dangling while nobody sees the
+   error (the client has gone; Harbor GC retries the DELETE, gets 404 and
+   counts it as success). Finishing the cleanup is what the serial code
+   did on S3 in practice, because the s3-aws driver ignores the request
+   context.
 2. Failed untag. Upstream DeleteManifest assigns the collected Untag
    errors to imh.Errors and then writes 202 Accepted anyway. Here, if any
    Untag fails, the handler returns the errors without writing 202.
@@ -53,7 +60,8 @@ missing links, prove the read concurrency reaches and never exceeds the
 limit, check error propagation, and check that a context cancelled
 before or during the lookup fails it; new handler tests cover the config
 validation, multi-tag untag on DELETE, the fail-closed 202 on a failing
-untag, and no 202 for a request cancelled during the tag lookup.
+untag, and a request cancelled during the tag lookup still untagging
+every referencing tag.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 ---
@@ -61,8 +69,8 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
  configuration/configuration_test.go           |   8 +
  docs/configuration.md                         |  22 +
  registry/handlers/app.go                      |  15 +
- registry/handlers/manifests.go                |  34 +-
- registry/handlers/tag_concurrency_test.go     | 303 +++++++++++++
+ registry/handlers/manifests.go                |  47 +-
+ registry/handlers/tag_concurrency_test.go     | 312 ++++++++++++++
  registry/storage/registry.go                  |  22 +-
  registry/storage/tagstore.go                  |  73 +++-
  registry/storage/tagstore_concurrency_test.go | 404 ++++++++++++++++++
@@ -73,7 +81,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
  vendor/golang.org/x/sync/errgroup/errgroup.go | 132 ++++++
  vendor/golang.org/x/sync/errgroup/go120.go    |  14 +
  .../golang.org/x/sync/errgroup/pre_go120.go   |  15 +
- 16 files changed, 1105 insertions(+), 24 deletions(-)
+ 16 files changed, 1125 insertions(+), 26 deletions(-)
  create mode 100644 registry/handlers/tag_concurrency_test.go
  create mode 100644 registry/storage/tagstore_concurrency_test.go
  create mode 100644 vendor/golang.org/x/sync/LICENSE
@@ -225,10 +233,14 @@ index 45cf4906..fd0c4914 100644
  	var redirectDisabled bool
  	if redirectConfig, ok := config.Storage["redirect"]; ok {
 diff --git a/registry/handlers/manifests.go b/registry/handlers/manifests.go
-index 0d8b6588..ad5836d0 100644
+index 0d8b6588..6fddd11e 100644
 --- a/registry/handlers/manifests.go
 +++ b/registry/handlers/manifests.go
-@@ -5,6 +5,7 @@ import (
+@@ -2,9 +2,11 @@ package handlers
+ 
+ import (
+ 	"bytes"
++	"context"
  	"fmt"
  	"net/http"
  	"strings"
@@ -236,7 +248,7 @@ index 0d8b6588..ad5836d0 100644
  
  	"github.com/distribution/reference"
  	"github.com/docker/distribution"
-@@ -16,9 +17,11 @@ import (
+@@ -16,9 +18,11 @@ import (
  	"github.com/docker/distribution/registry/api/errcode"
  	v2 "github.com/docker/distribution/registry/api/v2"
  	"github.com/docker/distribution/registry/auth"
@@ -248,7 +260,24 @@ index 0d8b6588..ad5836d0 100644
  )
  
  // These constants determine which architecture and OS to choose from a
-@@ -520,11 +523,34 @@ func (imh *manifestHandler) DeleteManifest(w http.ResponseWriter, r *http.Reques
+@@ -513,18 +517,49 @@ func (imh *manifestHandler) DeleteManifest(w http.ResponseWriter, r *http.Reques
+ 		}
+ 	}
+ 
+-	tagService := imh.Repository.Tags(imh)
+-	referencedTags, err := tagService.Lookup(imh, distribution.Descriptor{Digest: imh.Digest})
++	// Blockcast deviation from upstream a2afe23f38: the manifest is gone, so
++	// finish removing the tags that reference it even if the request is
++	// cancelled (client disconnect, caller timeout). Failing here instead
++	// leaves those tags pointing at the deleted manifest, and nobody sees the
++	// error: the client has gone, and a retried DELETE gets 404 (Harbor GC
++	// counts that as success). This is also what the code it replaces does on
++	// S3 in practice, because the s3-aws driver ignores the request context.
++	cleanupCtx := context.WithoutCancel(imh)
++	tagService := imh.Repository.Tags(cleanupCtx)
++	referencedTags, err := tagService.Lookup(cleanupCtx, distribution.Descriptor{Digest: imh.Digest})
+ 	if err != nil {
+ 		imh.Errors = append(imh.Errors, err)
  		return
  	}
  
@@ -266,7 +295,7 @@ index 0d8b6588..ad5836d0 100644
 +		tag := tag
 +
 +		g.Go(func() error {
-+			if err := tagService.Untag(imh, tag); err != nil {
++			if err := tagService.Untag(cleanupCtx, tag); err != nil {
 +				mu.Lock()
 +				errs = append(errs, err)
 +				mu.Unlock()
@@ -289,10 +318,10 @@ index 0d8b6588..ad5836d0 100644
  	w.WriteHeader(http.StatusAccepted)
 diff --git a/registry/handlers/tag_concurrency_test.go b/registry/handlers/tag_concurrency_test.go
 new file mode 100644
-index 00000000..e179bd14
+index 00000000..ada38ef0
 --- /dev/null
 +++ b/registry/handlers/tag_concurrency_test.go
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,312 @@
 +package handlers
 +
 +import (
@@ -532,13 +561,16 @@ index 00000000..e179bd14
 +	return d.StorageDriver.GetContent(ctx, path)
 +}
 +
-+// TestDeleteManifestCancelledRequestNot202: a DELETE whose request context is
-+// cancelled while DeleteManifest is looking up the referencing tags (client
-+// disconnect, caller timeout) must not report 202 Accepted. Upstream
++// TestDeleteManifestCancelledRequestUntagsAll: a DELETE whose request context
++// is cancelled while DeleteManifest is looking up the referencing tags (client
++// disconnect, caller timeout) must still untag every tag that referenced the
++// manifest, because the manifest is already deleted by then. Upstream
 +// a2afe23f38's Lookup returns the tags read so far with a nil error in that
-+// case, so the handler untags only some of them and answers 202, leaving the
-+// rest pointing at the deleted manifest.
-+func TestDeleteManifestCancelledRequestNot202(t *testing.T) {
++// case, so the handler untags only some of them; a Lookup that fails on the
++// cancelled context instead untags none. Either way tags are left pointing at
++// the deleted manifest, and nobody sees the error: the client has gone, and
++// Harbor GC's retry of the DELETE gets 404, which it treats as success.
++func TestDeleteManifestCancelledRequestUntagsAll(t *testing.T) {
 +	cancelOnLookupDriversMu.Lock()
 +	cancelOnLookupDrivers = nil
 +	cancelOnLookupDriversMu.Unlock()
@@ -591,9 +623,15 @@ index 00000000..e179bd14
 +	if ctx.Err() == nil {
 +		t.Fatalf("the lookup never read a tag link, so the cancellation was not exercised")
 +	}
-+	if rec.Code == http.StatusAccepted {
-+		remaining, err := tags.Lookup(env.ctx, distribution.Descriptor{Digest: dgst})
-+		t.Fatalf("DELETE cancelled during tag lookup returned 202 Accepted; %d tag(s) still reference the deleted manifest (lookup err %v)", len(remaining), err)
++	remaining, err := tags.Lookup(env.ctx, distribution.Descriptor{Digest: dgst})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(remaining) != 0 {
++		t.Fatalf("DELETE cancelled during tag lookup returned %d; %d of %d tag(s) still reference the deleted manifest", rec.Code, len(remaining), extra+1)
++	}
++	if rec.Code != http.StatusAccepted {
++		t.Fatalf("DELETE cancelled during tag lookup untagged everything but returned %d, want %d", rec.Code, http.StatusAccepted)
 +	}
 +}
 diff --git a/registry/storage/registry.go b/registry/storage/registry.go
@@ -1453,5 +1491,5 @@ index 00000000..1795c18a
 +	return ctx, func(error) { cancel() }
 +}
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 
