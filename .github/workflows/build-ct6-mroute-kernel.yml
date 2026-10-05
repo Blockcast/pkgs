@@ -8,16 +8,6 @@ on:
         required: false
         default: ''
         type: string
-  push:
-    branches:
-      - blockcast-ct6-ipv6-pimsm
-    paths:
-      - 'kernel/build/config-amd64'
-      - 'kernel/build/certs/**'
-      - 'kernel/build/patches/**'
-      - 'kernel/build/pkg.yaml'
-      - 'kernel/prepare/pkg.yaml'
-      - '.github/workflows/build-ct6-mroute-kernel.yml'
 
 concurrency:
   group: build-ct6-mroute-kernel-${{ github.ref }}
