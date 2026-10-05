@@ -2,10 +2,26 @@
 #
 # Generated on 2026-07-08T10:42:01Z by kres 14a38a3.
 
+# BLO-40066: HAND-EDITED, kres has no knob for this -- see .kres.yaml entry 6.
+# `default` (ci.yaml) became workflow_dispatch-only in b2103121b (BLO-37063), so
+# this notifier's only producer stopped firing automatically and #ci-failure went
+# dark while reading identical to a healthy channel. Measured 2026-10-05: its last
+# 6 runs are all `skipped`, and `check-build-params` failed twice on push to main
+# the previous day (runs 37232043809, 37238186789) with no notification sent.
+# The four added names are every workflow on main carrying a non-dispatch trigger
+# that can fail there. `default` is kept so a restored trigger -- or a failing
+# dispatch on main -- still reports. lock.yml and stale.yml are deliberately
+# excluded: housekeeping crons, not actionable CI. The `if:` below is unchanged
+# and still matches `failure` only; widening it to `cancelled` would spam the
+# channel from routine cancel-in-progress and is a separate decision.
 'on':
   workflow_run:
     workflows:
       - default
+      - check-build-params
+      - check-promote-installer-to-harbor
+      - harbor-registry-photon
+      - weekly
     types:
       - completed
     branches:
@@ -14,8 +30,14 @@ name: slack-notify-failure
 permissions: {}
 jobs:
   slack-notify:
-    runs-on:
-      group: generic
+    # BLO-40066: HAND-EDITED, kres emits `group: generic` -- see .kres.yaml entry 7.
+    # No runner group named `generic` exists in this org, so every dispatch of
+    # this job failed instantly: 1s wall, `runner_name: ""`, 0 steps, and the
+    # annotation `Required runner group 'generic' not found`. Re-pointing the
+    # producer list above is necessary but NOT sufficient without this -- the
+    # job would still have delivered nothing. ubuntu-latest is what every other
+    # green workflow in this repo uses for GitHub-hosted work.
+    runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event
       != 'pull_request'
     steps:
