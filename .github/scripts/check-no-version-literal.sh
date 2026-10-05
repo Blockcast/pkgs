@@ -59,6 +59,16 @@ PATTERN='(default:|:[-=?]|[A-Z_]+[:=]|[A-Za-z_]+=)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+|
 # silently adopt any future name starting CRANE_VER, which is exactly the
 # undeliberate widening the paragraph above forbids.
 #
+# The same anchoring is needed on the *left*, and the filter below spells it
+# `(^|[^-.A-Za-z0-9_])` rather than leaving the alternation bare. Unanchored, a
+# name merely *ending* in an entry was adopted as the pin -- `MY_CRANE_VER:`
+# and `XCRANE_VERSION:` both went silently clean -- which is the mirror image
+# of the prefix wildcard this paragraph declines. `-` and `.` are in the class
+# because the names here are not only shell names: a shell name is word
+# characters only, but a YAML key may hold either, so `FOO-CRANE_VER:` is a
+# reachable name and `[^A-Za-z0-9_]` alone would still adopt it. One probe per
+# character below, same as the value class.
+#
 # The filter is token-scoped, not line-scoped: it redacts each pin *and its
 # value* and re-tests what is left, so a real literal sharing a physical line
 # with a pin still reds. A `grep -v` over the line dropped the whole line once
@@ -160,10 +170,18 @@ scan() {
     # no longer match. Left to the comment rather than the code -- `a:12:b.yml`
     # is absurd as a filename, and the narrower the path test the more ordinary
     # paths it fails on.
+    #
+    # The `(^|[^A-Za-z0-9_])` that anchors the name on the left is part of the
+    # match, so the gsub eats that one leading character along with the pin.
+    # It is always a separator -- a word character there is what the anchor
+    # refuses -- and every PATTERN arm either starts at a word character or is
+    # `^`-anchored over leading whitespace, so dropping one separator cannot
+    # turn a hit into a miss. `TALOS=v1.13.4,CRANE_VER=v0.20.2` loses the
+    # comma and still reds.
     PAT="$PATTERN" AL="$ALLOW" awk '
       BEGIN {
         pat = ENVIRON["PAT"]
-        pin = "(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:],;&|{}]*"
+        pin = "(^|[^-.A-Za-z0-9_])(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:],;&|{}]*"
       }
       {
         rest = $0
@@ -263,6 +281,20 @@ self_test() {
   # This reds if the CRANE_VERSION alternative is dropped, which is how the
   # guard went red on main 86s after it landed (BLO-39887).
   probe "tool pin, longer name"   pass  '          CRANE_VERSION: v0.21.2'
+  # ...and the other end of the same anchoring. A name that merely *ends* in an
+  # entry is not that tool's pin, so its value is a fleet literal and must red.
+  # Goes red if `(^|[^-.A-Za-z0-9_])` is dropped from the pin regex: the bare
+  # alternation matches mid-name and the line is redacted away silently. The
+  # probe above is the positive control -- the real pins must stay quiet.
+  probe "name merely ending in a pin's name" catch \
+    '          MY_CRANE_VER: v1.13.4'
+  # The two non-word name characters, one probe each: a YAML key may hold `-`
+  # or `.` where a shell name may not, so leaving either out of the anchor
+  # class re-opens the miss above for that character alone.
+  probe "hyphenated name ending in a pin's name" catch \
+    '          FOO-CRANE_VER: v1.13.4'
+  probe "dotted name ending in a pin's name" catch \
+    '          foo.CRANE_VER: v1.13.4'
   # BLO-40232: the pin is scoped to its own token, so a real literal sharing
   # the line still reds. Goes red if the redact-and-re-test awk is reverted to
   # a `grep -v` over the line -- the fail-open this probe exists for. The
@@ -297,17 +329,24 @@ self_test() {
     '          CRANE_VER=v0.20.2&&TALOS=v1.13.4' c.sh
   probe "literal after a pin past a pipe" catch \
     '          CRANE_VER=v0.20.2|TALOS=v1.13.4' c.sh
-  # The last two are legal but not idiomatic, and they are the *only* shapes
-  # that pin `{` and `}`: a brace has to fall immediately after a value to
-  # bound it, which rules out the flow mapping above (its `{` sits before the
-  # pin name, and in `v0.20.2{x}` the `}` bounds first). Kept as probes rather
-  # than as an UNPINNED note because a one-line fixture that reds is cheaper
-  # than a paragraph claiming the character is unreachable -- which is what
-  # the per-character sweep above disproved.
+  # The last two are the *only* shapes that pin `{` and `}`: a brace has to
+  # fall immediately after a value to bound it, which rules out the flow
+  # mapping above (its `{` sits before the pin name, and in `v0.20.2{x}` the
+  # `}` bounds first). Both are shell, and both are legal-but-unidiomatic
+  # there -- measured, `sh -n` accepts each as a single assignment word. The
+  # close-brace fixture was written as YAML (`{CRANE_VER: v0.20.2}TALOS:
+  # v1.13.4`) and is *not* valid YAML -- go-yaml rejects it, "did not find
+  # expected key", trailing content after a flow mapping -- so the claim and
+  # the fixture disagreed. Moved to shell rather than softened in prose: the
+  # shape still pins `}`, and now the one word covering both halves is one
+  # that was measured for both. Kept as probes rather than as an UNPINNED note
+  # because a one-line fixture that reds is cheaper than a paragraph claiming
+  # the character is unreachable -- which is what the per-character sweep
+  # above disproved.
   probe "literal after a pin past an open brace" catch \
     '          CRANE_VER=v0.20.2{TALOS=v1.13.4' c.sh
   probe "literal after a pin past a close brace" catch \
-    '      {CRANE_VER: v0.20.2}TALOS: v1.13.4'
+    '          CRANE_VER=v0.20.2}TALOS=v1.13.4' c.sh
   # The re-test has to see the content, not grep -rn's `path:line:` prefix.
   # This line's literal is caught only by PATTERN's `^`-anchored whole-line
   # arm, so it is the one shape that needs the prefix stripped off first. Goes
