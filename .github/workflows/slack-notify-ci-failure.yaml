@@ -30,8 +30,14 @@ name: slack-notify-failure
 permissions: {}
 jobs:
   slack-notify:
-    runs-on:
-      group: generic
+    # BLO-40066: HAND-EDITED, kres emits `group: generic` -- see .kres.yaml entry 7.
+    # No runner group named `generic` exists in this org, so every dispatch of
+    # this job failed instantly: 1s wall, `runner_name: ""`, 0 steps, and the
+    # annotation `Required runner group 'generic' not found`. Re-pointing the
+    # producer list above is necessary but NOT sufficient without this -- the
+    # job would still have delivered nothing. ubuntu-latest is what every other
+    # green workflow in this repo uses for GitHub-hosted work.
+    runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event
       != 'pull_request'
     steps:

@@ -1,8 +1,8 @@
 ---
 # ⚠ `make rekres` OVERWRITES .github/workflows/weekly.yaml AND .github/workflows/
-# ci.yaml AND .github/workflows/slack-notify-ci-failure.yaml AND WILL DROP SIX
+# ci.yaml AND BOTH .github/workflows/slack-notify*.yaml AND WILL DROP SEVEN
 # HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
-# Re-apply all six after running it:
+# Re-apply all seven after running it:
 #   1. weekly.yaml: `runs-on: pkgs-public`  (kres emits `group: pkgs`) — BLO-21948
 #   2. weekly.yaml: `timeout-minutes: 960`  on `reproducibility` — BLO-37661
 #   3. ci.yaml: `"on"` REDUCED to `workflow_dispatch: {}` — the `push` and
@@ -42,6 +42,21 @@
 #      `check-build-params` failed twice on push to main the day before with no
 #      notification sent. If (3) is ever reverted, (6) stays correct as-is:
 #      `default` is still first in the list. Do not drop it back to `[default]`.
+#   7. BOTH slack-notify.yaml AND slack-notify-ci-failure.yaml: `runs-on:`
+#      changed from `group: generic` to `ubuntu-latest` — BLO-40066. kres emits
+#      the group form; **no runner group named `generic` exists in this org**
+#      (org groups 2026-10-05: default, macos, drain, pkgs, pop-fleet,
+#      blo13673-uat, sccache-writer, arc-storage-wffc-canary,
+#      arc-paperclip-general, arc-merge-queue, arc-paperclip-buildkit,
+#      pkgs-public, plus `-tools` variants). Every dispatch therefore failed
+#      instantly — 1s wall, `runner_name: ""`, 0 steps, annotation
+#      `Required runner group 'generic' not found` — so BOTH Slack channels were
+#      dark. Measured: slack-notify 30/30 `failure` over its last 30 runs;
+#      slack-notify-ci-failure's last non-`skipped` run (2026-06-18) failed the
+#      same way. This is NOT the BLO-21948/BLO-37063 shape: that one is a real
+#      group a public repo may not use, which queues 24h and is reaped. A
+#      nonexistent group fails in one second. Both read as a dead notifier; only
+#      the annotation tells them apart. (6) is inert without (7) — keep together.
 # Neither has a spec field: kres builds that job as a Go literal with no
 # TimeoutMinutes and no runner override (siderolabs/kres
 # internal/project/pkgfile/build.go, the weekly Workflow in CompileGitHubWorkflow).
