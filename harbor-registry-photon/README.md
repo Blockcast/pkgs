@@ -8,10 +8,12 @@
 image — entrypoint, user, healthcheck, volumes, the other files — is the stock
 image, byte for byte.
 
-Published as `ghcr.io/blockcast/harbor-registry-photon:v2.14.0-taglookup.2`
-(`./build.sh --print-tag`). **Do not deploy `v2.14.0-taglookup.1`:** it was
-published before deviation 1 below existed, so a cancelled manifest `DELETE`
-can answer `202` and leave tags pointing at the deleted manifest.
+Published as `ghcr.io/blockcast/harbor-registry-photon:v2.14.0-taglookup.3`
+(`./build.sh --print-tag`). **Do not deploy `v2.14.0-taglookup.1` or `.2`.**
+Both were published before deviation 1 below was complete. With either, a
+manifest `DELETE` whose request is cancelled mid-cleanup leaves tags pointing
+at the deleted manifest. `.1` untags only some of them and answers `202`; `.2`
+untags none of them and answers `500`, which nobody sees.
 
 ## Why
 
@@ -138,7 +140,7 @@ it identifies itself:
 
 ```
 $ registry_DO_NOT_USE_GC --version
-/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-23-g0c62ec3e+blockcast-taglookup.2
+/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-23-g0c62ec3e+blockcast-taglookup.3
 ```
 
 `REVISION` is `<DISTRIBUTION_SHA>+patch.sha256.<sha256 of the patch files>`.
