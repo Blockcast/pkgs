@@ -107,11 +107,27 @@ scan() {
     # `CRANE_VER=` alone and the bare `"v0.20.2"` left behind matches PATTERN's
     # whole-line arm, so the pin would red itself.
     #
-    # `[^[:space:]]*` is the value: unquoted, quoted, or absent (a YAML key
-    # whose value is on the next line) all end at whitespace. It is greedy and
-    # could in principle eat a `#` and the comment after it, but PATTERN's
-    # `[^#]*` already refuses to look past a `#`, so nothing downstream reads
-    # what it ate.
+    # `[^[:space:],;&|{}]*` is the value: unquoted or quoted, both end at
+    # whitespace. The separator classes are the point -- bounding only at
+    # whitespace made the value greedy across any *other* separator, so
+    # `CRANE_VER=v0.20.2;TALOS=v1.13.4`, the `&&` form and the YAML flow
+    # mapping `{CRANE_VER: v0.20.2,TALOS: v1.13.4}` each redacted the real
+    # literal along with the pin and went silently clean: the same fail-open,
+    # one separator over, as the line-scoped `grep -v` this stage replaced
+    # (BLO-40232). A pin value contains none of these characters, so bounding
+    # at them costs nothing. The comma form happened to red anyway -- the
+    # greedy value stopped at the space before the second value, leaving it
+    # alone on the remainder for the whole-line arm -- but that rescue
+    # vanishes inside `{...}`, which is why it is not evidence of coverage.
+    #
+    # An *absent* value (a YAML key whose value is on the next line) redacts
+    # fine, but the continuation line carries no pin token at all, so
+    # redaction there is a no-op and the whole-line arm flags it: `CRANE_VER:`
+    # over two lines reds today. Loud, pre-existing, and $EXEMPT absorbs it.
+    #
+    # The match is greedy and could in principle eat a `#` and the comment
+    # after it, but PATTERN's `[^#]*` already refuses to look past a `#`, so
+    # nothing downstream reads what it ate.
     #
     # PATTERN arrives through the environment, not `-v`: `-v` runs escape
     # processing over the value, and the three `\.` here are undefined escapes,
@@ -131,10 +147,15 @@ scan() {
     # a colon in the path -- the line is kept rather than re-tested: a false
     # positive is loud, and a guard that fails open is worse than no guard.
     # That is the same trade, in the same direction, as the carve-out below.
+    # The claim is fail-closed, not total: a path containing `:<digits>:` makes
+    # the strip succeed on the *wrong* colon, leaving content the `^` arm can
+    # no longer match. Left to the comment rather than the code -- `a:12:b.yml`
+    # is absurd as a filename, and the narrower the path test the more ordinary
+    # paths it fails on.
     PAT="$PATTERN" AL="$ALLOW" awk '
       BEGIN {
         pat = ENVIRON["PAT"]
-        pin = "(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:]]*"
+        pin = "(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:],;&|{}]*"
       }
       {
         rest = $0
@@ -249,6 +270,18 @@ self_test() {
     '          TALOS: v1.13.4 CRANE_VER: v0.20.2'
   probe "two pins on one line stay quiet" pass \
     '          CRANE_VER=v0.20.2 CRANE_VERSION=v0.21.2' c.sh
+  # The pin's *value* is bounded at the separators a version cannot contain,
+  # not just at whitespace. One probe per separator family, because reverting
+  # half the class is a mutation that would otherwise survive: this one covers
+  # `{`/`,`/`}` -- the YAML flow mapping, the only one of these shapes that is
+  # idiomatic rather than merely legal...
+  probe "literal after a pin in a flow mapping" catch \
+    '      env: {CRANE_VER: v0.20.2,TALOS: v1.13.4}'
+  # ...and this one covers `;`/`&`/`|`, the shell separators. Both went
+  # silently clean before BLO-40232's second pass: the greedy value swallowed
+  # the separator and the real literal with it.
+  probe "literal after a pin past a shell separator" catch \
+    '          CRANE_VER=v0.20.2;TALOS=v1.13.4' c.sh
   # The re-test has to see the content, not grep -rn's `path:line:` prefix.
   # This line's literal is caught only by PATTERN's `^`-anchored whole-line
   # arm, so it is the one shape that needs the prefix stripped off first. Goes
