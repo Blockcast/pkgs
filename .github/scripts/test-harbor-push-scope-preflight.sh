@@ -170,8 +170,13 @@ cat > "$stub/curl" <<'STUB'
 # Test stub. Never makes a request: exits STUB_CURL_EXIT when set, else prints
 # STUB_CURL_BODY. Records its argv to STUB_CURL_ARGV, one argument per line, so
 # the OUTBOUND half of the call site -- the scope asked for, and whether the
-# credential curlrc is attached at all -- can be asserted too.
+# credential curlrc is attached at all -- can be asserted too. Copies the file
+# passed to --config into STUB_CURL_CRED, so what that curlrc CARRIES is
+# assertable as well, not only that one was attached.
 [[ -n "${STUB_CURL_ARGV:-}" ]] && printf '%s\n' "$@" > "$STUB_CURL_ARGV"
+if [[ -n "${STUB_CURL_CRED:-}" ]]; then
+  prev=""; for a in "$@"; do [[ "$prev" == --config ]] && cp "$a" "$STUB_CURL_CRED"; prev="$a"; done
+fi
 [[ -n "${STUB_CURL_EXIT:-}" ]] && exit "$STUB_CURL_EXIT"
 printf '%s' "${STUB_CURL_BODY:-}"
 STUB
@@ -190,16 +195,18 @@ print(json.dumps({"token": "header.%s.signature" % payload}))
 PY
 }
 
-# Runs the script against the stub. Sets RC / OUT / SUMMARY / ARGV.
+# Runs the script against the stub. Sets RC / OUT / SUMMARY / ARGV / CRED.
 run_preflight() {
-  local summary_file argv_file; summary_file=$(mktemp); argv_file=$(mktemp)
+  local summary_file argv_file cred_file
+  summary_file=$(mktemp); argv_file=$(mktemp); cred_file=$(mktemp)
   RC=0
   OUT=$(PATH="$stub:$PATH" HARBOR_USERNAME=u HARBOR_PASSWORD=p \
         GITHUB_STEP_SUMMARY="$summary_file" STUB_CURL_ARGV="$argv_file" \
-        bash "$script" 2>&1) || RC=$?
+        STUB_CURL_CRED="$cred_file" bash "$script" 2>&1) || RC=$?
   SUMMARY=$(cat "$summary_file")
   ARGV=$(cat "$argv_file")
-  rm -f "$summary_file" "$argv_file"
+  CRED=$(cat "$cred_file")
+  rm -f "$summary_file" "$argv_file" "$cred_file"
 }
 
 has() { case "$2" in *"$1"*) echo yes ;; *) echo no ;; esac; }
@@ -224,6 +231,9 @@ check "asks Harbor for push, not just pull" "yes" \
   "$(has "scope=repository:$REPO:push,pull" "$ARGV")"
 check "asks about OUR repository"           "yes" "$(has "repository:$REPO:" "$ARGV")"
 check "sends the credential curlrc"         "yes" "$(has '--config' "$ARGV")"
+# ...and that curlrc carries the credential. Attached-but-blank (`user = ":"`)
+# probes anonymously, the same no-push-for-everyone false FAIL as no curlrc.
+check "the curlrc actually carries it"      "yes" "$(has 'user = "u:p"' "$CRED")"
 
 STUB_CURL_BODY=$(token_json "$REPO" "pull"); run_preflight
 check "no-push arm exits 1"             "1"   "$RC"

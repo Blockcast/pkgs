@@ -269,4 +269,16 @@ open(path, "w").write(s.replace(old, '', 1))
 PY
 assert_caught "curlrc not attached (an anonymous probe reads as no-push for everyone)"
 
+# 16. The curlrc's CONTENT (Ally, BLO-39281). Mutation 15 removes the attachment;
+#     this keeps it attached but writes no credential into it.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '"$(curlrc_escape "$HARBOR_USERNAME")" "$(curlrc_escape "$HARBOR_PASSWORD")"'
+assert old in s, "curlrc credential not found -- update this mutation"
+open(path, "w").write(s.replace(old, '"" ""', 1))
+PY
+assert_caught "curlrc attached but blank (an anonymous probe reads as no-push for everyone)"
+
 echo "all mutations caught"
