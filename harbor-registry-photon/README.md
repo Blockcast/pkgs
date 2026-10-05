@@ -157,8 +157,8 @@ reports the patched string.
 `--push` never repoints a published tag: change anything here, bump
 `PATCH_REVISION`. That includes the workflow file — a merge to `main` that
 touches it re-runs `--push`, which stops on the existing tag and turns `main`
-red. The one exception is this README: `main` pushes that change only
-`README.md` do not trigger the workflow. CI (`.github/workflows/harbor-registry-photon.yaml`) runs
+red. The one exception is this README: pushes and pull requests that change
+only `README.md` do not trigger the workflow. CI (`.github/workflows/harbor-registry-photon.yaml`) runs
 `--check` on pull requests whose head is in this repository (that keeps the
 unmodified workflow off the privileged self-hosted runner for fork PRs, but a
 fork PR can edit the workflow; the real control is the repo's fork-PR approval

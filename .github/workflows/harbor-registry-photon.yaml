@@ -28,17 +28,20 @@
 name: harbor-registry-photon
 
 on:
+  # README-only changes do not change the image: a PR would rebuild it on the
+  # privileged runner for nothing, and a main push would hit build.sh's "tag
+  # already exists" refusal unless PATCH_REVISION is bumped. main has no
+  # required status checks, so skipping the run cannot strand a PR.
   pull_request:
     branches:
       - main
     paths:
       - 'harbor-registry-photon/**'
+      - '!harbor-registry-photon/README.md'
       - '.github/workflows/harbor-registry-photon.yaml'
   push:
     branches:
       - main
-    # README-only changes do not change the image; publishing them would hit
-    # build.sh's "tag already exists" refusal unless PATCH_REVISION is bumped.
     paths:
       - 'harbor-registry-photon/**'
       - '!harbor-registry-photon/README.md'
