@@ -70,6 +70,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Compose + push signed installer
+        id: compose
         env:
           # Cross-repo pull: the imager fetches the SIGNED amt-kmod extension
           # (Blockcast/linux-amt, private), which this repo's GITHUB_TOKEN cannot
@@ -216,6 +217,7 @@ jobs:
           echo "composed SecureBoot installer loaded as: ${LOADED}"
           docker tag  "$LOADED" "$OUT"
           docker push "$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
           echo "Published deployable SecureBoot signed installer: $OUT"
 
       # BLO-39281. The artifact above is now on ghcr, where the Talos nodes
@@ -249,7 +251,7 @@ jobs:
 
       - name: Promote the signed installer into Harbor
         env:
-          OUT: ${{ inputs.out_tag }}
+          OUT: ${{ steps.compose.outputs.out }}
           OVERWRITE: ${{ inputs.overwrite_harbor_tag }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
