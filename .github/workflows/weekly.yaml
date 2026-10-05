@@ -59,6 +59,42 @@ jobs:
               platforms: linux/arm64
           driver: remote
           endpoint: tcp://buildkit-amd64.ci.svc.cluster.local:1234
+      # BLO-40437: HAND-EDITED, kres has no knob for this — see .kres.yaml.
+      # Makefile:234 ends reproducibility-test with `diffoscope build-a build-b`,
+      # and diffoscope is installed NOWHERE — not in this fork, and not upstream
+      # (siderolabs/pkgs has no install step either; their runners carry it, the
+      # arc-runner image does not). Run 37253805723 completed BOTH 4h48m builds
+      # and then died on the very last line with `diffoscope: No such file or
+      # directory` / `Error 127`, 9h06m in. The line had never been reached
+      # before, which is why nobody noticed.
+      #
+      # This step runs BEFORE reproducibility-test deliberately: a failure here
+      # costs seconds, whereas anything that fails after the build throws away
+      # ~9h of completed work. `--version` is the fail-fast probe — an install
+      # that silently no-ops would otherwise reproduce the same Error 127 nine
+      # hours later, which is exactly the failure being fixed.
+      #
+      # A containerised diffoscope is NOT an option here: there is no local
+      # Docker daemon on the runner (`docker version` → `dial unix
+      # /run/user/1001/docker.sock: no such file or directory`). Builds work
+      # only because the buildx driver is `remote`. sudo is available
+      # (NOPASSWD, arc/runner-image/Dockerfile). Baking diffoscope into that
+      # image was rejected: one sha serves 24 scale sets, so it is a 24-lane
+      # change for one weekly job.
+      #
+      # diffoscope-minimal (noble/universe, 146kB dl / 720kB installed, 5
+      # python3 deps) over the full `diffoscope`, whose ~30 Recommends pull
+      # ffmpeg, ghostscript and imagemagick. Tradeoff, stated rather than
+      # hidden: without those helpers diffoscope falls back to hexdump for
+      # binaries it cannot decode. It still compares correctly and still exits
+      # non-zero on difference — only the readability of a *found* diff
+      # degrades. If a real difference is ever reported and the output is
+      # unusable, the upgrade is one package name.
+      - name: install-diffoscope
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends diffoscope-minimal
+          diffoscope --version
       - name: reproducibility-test
         run: |
           make reproducibility-test

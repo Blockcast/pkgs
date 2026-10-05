@@ -1,8 +1,8 @@
 ---
 # ⚠ `make rekres` OVERWRITES .github/workflows/weekly.yaml AND .github/workflows/
-# ci.yaml AND BOTH .github/workflows/slack-notify*.yaml AND WILL DROP SEVEN
+# ci.yaml AND BOTH .github/workflows/slack-notify*.yaml AND WILL DROP EIGHT
 # HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
-# Re-apply all seven after running it:
+# Re-apply all eight after running it:
 #   1. weekly.yaml: `runs-on: pkgs-public`  (kres emits `group: pkgs`) — BLO-21948
 #   2. weekly.yaml: `timeout-minutes: 960`  on `reproducibility` — BLO-37661
 #   3. ci.yaml: `"on"` REDUCED to `workflow_dispatch: {}` — the `push` and
@@ -57,6 +57,18 @@
 #      group a public repo may not use, which queues 24h and is reaped. A
 #      nonexistent group fails in one second. Both read as a dead notifier; only
 #      the annotation tells them apart. (6) is inert without (7) — keep together.
+#   8. weekly.yaml: an `install-diffoscope` step added BEFORE
+#      `reproducibility-test` — BLO-40437. Makefile:234 ends the target with
+#      `diffoscope build-a build-b`; diffoscope is in neither this fork nor
+#      upstream (siderolabs/pkgs assumes its own runners carry it) and is absent
+#      from the arc-runner image. Run 37253805723 finished BOTH builds and died
+#      on that last line, `Error 127`, 9h06m in. Keep it BEFORE the build step:
+#      after it, any failure discards ~9h of completed work. Keep the
+#      `diffoscope --version` probe — an install that silently no-ops
+#      reproduces the identical Error 127 nine hours later. A containerised
+#      diffoscope is impossible here (no local Docker daemon on the runner; the
+#      buildx driver is `remote`), and baking it into the arc-runner image was
+#      rejected because one image sha serves 24 scale sets.
 # Neither has a spec field: kres builds that job as a Go literal with no
 # TimeoutMinutes and no runner override (siderolabs/kres
 # internal/project/pkgfile/build.go, the weekly Workflow in CompileGitHubWorkflow).
