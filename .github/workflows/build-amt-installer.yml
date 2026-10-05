@@ -1,6 +1,31 @@
-# Build the version-matched custom imager, installer-base, and installer.
-# The imager supplies the kernel and initramfs; PKG_KERNEL must point to the
-# Blockcast-signed kernel package from build-ct6-mroute-kernel.yml.
+# Compose the Blockcast custom Talos installer that consumes our custom kernel
+# pkg (ghcr.io/blockcast/kernel:<talos>-amt). Produces:
+#
+#   ghcr.io/blockcast/installer:<talos>-amt
+#
+# Depends on build-ct6-mroute-kernel.yml having published the kernel image first.
+# Design: ~/k8s/.planning/2026-06-17-amt-signed-talos-kernel-design.md (Stage 2)
+#
+# BUILD GRAPH (the subtlety the design doc under-specified): Talos `make
+# installer` does NOT build the installer from PKG_KERNEL directly. It composes
+# the final installer by running the `imager` tool against a prebuilt
+# `installer-base` image -- and the Makefile resolves BOTH under
+# REGISTRY_AND_USERNAME (= ghcr.io/blockcast here). The custom kernel is baked
+# into `installer-base` (its Dockerfile stage COPYs vmlinuz + /usr/lib/modules
+# FROM ${PKG_KERNEL}); the `imager` is just the stock, version-matched compose
+# tool and carries no kernel. So the job does three things:
+#   (1) mirror the stock siderolabs imager under ghcr.io/blockcast/imager:<tag>
+#       so `make installer`'s `docker pull` of it resolves,
+#   (2) build + push the custom installer-base (stock rootfs + our kernel),
+#   (3) `make installer`, which runs the imager (with -e GITHUB_TOKEN so it can
+#       pull the PRIVATE installer-base) and crane-pushes the final installer.
+# A first attempt that ran only `make installer PKG_KERNEL=...` failed at
+# image-installer with "ghcr.io/blockcast/imager:... not found" (run 27705504057).
+#
+# Runner: the installer-base build COPYs a prebuilt kernel pkg (no kernel
+# compile) and the compose is light, but we use `chromium-build` for consistency
+# with build-amt-kernel-pkg and to guarantee a dind that can pull the (private)
+# kernel/installer-base images with the job's GITHUB_TOKEN.
 
 name: build-amt-installer
 
