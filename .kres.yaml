@@ -1,7 +1,8 @@
 ---
 # ⚠ `make rekres` OVERWRITES .github/workflows/weekly.yaml AND .github/workflows/
-# ci.yaml AND WILL DROP FIVE HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
-# Re-apply all five after running it:
+# ci.yaml AND .github/workflows/slack-notify-ci-failure.yaml AND WILL DROP SIX
+# HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
+# Re-apply all six after running it:
 #   1. weekly.yaml: `runs-on: pkgs-public`  (kres emits `group: pkgs`) — BLO-21948
 #   2. weekly.yaml: `timeout-minutes: 960`  on `reproducibility` — BLO-37661
 #   3. ci.yaml: `"on"` REDUCED to `workflow_dispatch: {}` — the `push` and
@@ -29,6 +30,18 @@
 #      against any tag run `make release-notes` and softprops/action-gh-release
 #      under `contents: write` with the build and `check-dirty` steps skipped.
 #      Keep (3), (4) and (5) together.
+#   6. slack-notify-ci-failure.yaml: `workflow_run.workflows` EXTENDED from
+#      `[default]` to add `check-build-params`,
+#      `check-promote-installer-to-harbor`, `harbor-registry-photon` and
+#      `weekly` — BLO-40066. kres derives that list from its own workflow set
+#      and cannot name the hand-written workflows in this repo. This edit is a
+#      direct consequence of (3): once `default` is workflow_dispatch-only it
+#      produces nothing automatically, so a notifier watching only `default`
+#      goes dormant and reads identical to a healthy one on every dashboard.
+#      Measured 2026-10-05 — its last 6 runs all `skipped`, while
+#      `check-build-params` failed twice on push to main the day before with no
+#      notification sent. If (3) is ever reverted, (6) stays correct as-is:
+#      `default` is still first in the list. Do not drop it back to `[default]`.
 # Neither has a spec field: kres builds that job as a Go literal with no
 # TimeoutMinutes and no runner override (siderolabs/kres
 # internal/project/pkgfile/build.go, the weekly Workflow in CompileGitHubWorkflow).
