@@ -9,19 +9,12 @@
 #
 # Pure bash against a stubbed `crane` -- no registry, no credential, no network.
 #
-# INERT as of 2026-10-02 -- tracked by BLO-37063, which owns the fix and is
-# where this line gets retired. No runner can pick this job up, so every run
-# queues and it gates nothing. This repo is public; runner group `pkgs` has
-# allows_public_repositories=false, and `pkgs-public` is restricted to
-# weekly.yaml@refs/heads/main. It becomes live only once an org admin allows
-# public repositories on `pkgs`, or adds this workflow to `pkgs-public`'s
-# selected workflows -- with a ref that matches `pull_request` runs, which
-# refs/heads/main does not. Until then, run both scripts below locally before
-# changing the promotion script.
-#
-# Not specific to this lane: ci.yaml is on `runs-on: pkgs` too (:28, :129), so
-# no `pull_request` job of any kind has executed in this repo since 2026-06-26.
-# That is the condition BLO-37063 tracks; this header is its local symptom.
+# Shell-only tests run on GitHub-hosted runners; no cluster access is needed.
+# Do not move this to `runs-on: pkgs` to match ci.yaml: that runner group has
+# allows_public_repositories=false and this repo is public, so the job queues
+# forever and gates nothing (BLO-37063). It sat inert here from 2026-10-02
+# until 2026-10-05 for exactly that reason, while the identical workflow on
+# main ran green on ubuntu-latest.
 name: check-promote-installer-to-harbor
 
 on:
@@ -49,7 +42,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: pkgs
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
