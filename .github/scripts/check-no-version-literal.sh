@@ -58,6 +58,15 @@ PATTERN='(default:|:[-=?]|[A-Z_]+[:=]|[A-Za-z_]+=)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+|
 # Alternate rather than reach for `CRANE_VER[A-Z_]*`: a prefix wildcard would
 # silently adopt any future name starting CRANE_VER, which is exactly the
 # undeliberate widening the paragraph above forbids.
+#
+# The filter is token-scoped, not line-scoped: it redacts each pin *and its
+# value* and re-tests what is left, so a real literal sharing a physical line
+# with a pin still reds. A `grep -v` over the line dropped the whole line once
+# any entry appeared on it -- a fail-open, since the suppression was wider than
+# the thing it suppressed (BLO-40232). Nothing in .github wrote two assignments
+# on one line, so this was never live; pinned by a probe rather than left to be
+# rediscovered on a red build, which is how the dotted-quad limit above is
+# handled too.
 ALLOW='CRANE_VER|CRANE_VERSION'
 
 # A line that declares its literal is a fixture is exempt. Line-level, not
@@ -92,7 +101,46 @@ scan() {
   # dropped here.
   grep -rnE "$PATTERN" "$1" --exclude="$(basename "$0")" 2>/dev/null |
     grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
-    grep -vE "($ALLOW)[[:space:]]*[:=]" |
+    # Redact every $ALLOW pin and its value, then re-test the remainder against
+    # PATTERN. Dropping the whole line instead let a genuine literal ride along
+    # on a pin's line (BLO-40232). The value has to go with the name: strip
+    # `CRANE_VER=` alone and the bare `"v0.20.2"` left behind matches PATTERN's
+    # whole-line arm, so the pin would red itself.
+    #
+    # `[^[:space:]]*` is the value: unquoted, quoted, or absent (a YAML key
+    # whose value is on the next line) all end at whitespace. It is greedy and
+    # could in principle eat a `#` and the comment after it, but PATTERN's
+    # `[^#]*` already refuses to look past a `#`, so nothing downstream reads
+    # what it ate.
+    #
+    # PATTERN arrives through the environment, not `-v`: `-v` runs escape
+    # processing over the value, and the three `\.` here are undefined escapes,
+    # which implementations are free to handle differently. ENVIRON does no
+    # processing at all, so the regex reaches awk byte-for-byte whatever awk
+    # this is. UNPINNED: mawk 1.3.4, the awk on this runner, passes `\.`
+    # through `-v` unchanged, so no probe below can tell the two apart here and
+    # reverting to `-v` is a surviving mutation. Kept because it costs one
+    # token and removes the question; not kept on the strength of a measured
+    # failure, which is why this says so rather than claiming a probe covers
+    # it (BLO-40232).
+    #
+    # The re-test runs on the *content*, with grep -rn's `path:line:` prefix
+    # stripped. PATTERN's whole-line arm is `^`-anchored, and against the
+    # prefixed string that anchor can never fire, so `v1.13.4 CRANE_VER: v0.20.2`
+    # would read clean. When the prefix will not parse -- `^[^:]*` cannot cross
+    # a colon in the path -- the line is kept rather than re-tested: a false
+    # positive is loud, and a guard that fails open is worse than no guard.
+    # That is the same trade, in the same direction, as the carve-out below.
+    PAT="$PATTERN" AL="$ALLOW" awk '
+      BEGIN {
+        pat = ENVIRON["PAT"]
+        pin = "(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:]]*"
+      }
+      {
+        rest = $0
+        gsub(pin, "", rest)
+        if (!sub(/^[^:]*:[0-9]+:/, "", rest) || rest ~ pat) print
+      }' |
     # "drop $EXEMPT lines unless they are a `default:`" needs a negative
     # lookahead, which ERE has not; awk is the one stage that can express it.
     # `grep .` is load-bearing -- awk always exits 0, and callers read scan's
@@ -186,6 +234,40 @@ self_test() {
   # This reds if the CRANE_VERSION alternative is dropped, which is how the
   # guard went red on main 86s after it landed (BLO-39887).
   probe "tool pin, longer name"   pass  '          CRANE_VERSION: v0.21.2'
+  # BLO-40232: the pin is scoped to its own token, so a real literal sharing
+  # the line still reds. Goes red if the redact-and-re-test awk is reverted to
+  # a `grep -v` over the line -- the fail-open this probe exists for. The
+  # `env:` probe above is the positive control for it: `TALOS: v1.13.4` alone
+  # was already caught, so a pass here is scoping and not blanket suppression.
+  probe "literal riding on a pin's line" catch \
+    '          CRANE_VER: v0.20.2 TALOS: v1.13.4'
+  # ...and the pin itself is still not the thing reported. Both orders, because
+  # the redaction is a gsub over the line and must not depend on which comes
+  # first. Goes red if the value stops being redacted with the name: the bare
+  # `v0.20.2` left behind is a whole-line-arm hit all by itself.
+  probe "pin after the literal still reds" catch \
+    '          TALOS: v1.13.4 CRANE_VER: v0.20.2'
+  probe "two pins on one line stay quiet" pass \
+    '          CRANE_VER=v0.20.2 CRANE_VERSION=v0.21.2' c.sh
+  # The re-test has to see the content, not grep -rn's `path:line:` prefix.
+  # This line's literal is caught only by PATTERN's `^`-anchored whole-line
+  # arm, so it is the one shape that needs the prefix stripped off first. Goes
+  # red if `sub(/^[^:]*:[0-9]+:/, ...)` is dropped from the re-test.
+  probe "literal at line start, pin after it" catch \
+    '      v1.13.4 CRANE_VER: v0.20.2'
+  # ...and when the prefix cannot be found at all, the line is kept. Same path
+  # shape as the exemption probe further down, but with a pin on the line, so
+  # it reaches this stage's fail-closed arm instead. Goes red if the strip is
+  # made unconditional: the `^` arm then never fires and the literal is waved
+  # through silently, which is the one direction this guard must not fail in.
+  probe "colon in the path keeps a pin line" catch \
+    '      v1.13.4 CRANE_VER: v0.20.2' 'a:b.yml'
+  # The remainder is re-tested against PATTERN verbatim, so a dotted-looking
+  # non-version on a pin line must stay quiet. This does NOT pin the ENVIRON
+  # choice: under mawk, `-v` delivers `\.` unchanged and this still passes.
+  # See the UNPINNED note at the awk stage.
+  probe "pin line with a non-version dotted-looking value" pass \
+    '          CRANE_VER: v0.20.2 FOO=1x2x3' c.sh
 
   # Pins the BLO-39887 design decision: widening the equals arm to take a colon
   # too reds all 30 of these. If someone does, this goes red first.
