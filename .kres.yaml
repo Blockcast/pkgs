@@ -15,12 +15,13 @@
 #      comment at the top of ci.yaml.
 #   4. ci.yaml: the three publish steps (`Login to registry`, `Push to
 #      registry`, `Push nonfree`) carry an added
-#      `&& (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))`
+#      `&& (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/v'))`
 #      — BLO-37063. kres gates them on `github.event_name != 'pull_request'`
 #      alone, which under the workflow_dispatch-only trigger from (3) means a
 #      dispatch against ANY branch would run `make PUSH=true` to ghcr with the
-#      build and `check-dirty` steps skipped. `refs/tags/v` matches the removed
-#      trigger's `tags: [v*]`; a bare `refs/tags/` would widen it to any tag.
+#      build and `check-dirty` steps skipped. The guard preserves the removed
+#      trigger's `main`, `release-*`, and `tags: [v*]` refs; a bare `refs/tags/`
+#      would widen it to any tag. Keep the three publish guards together.
 #   5. ci.yaml: `release-notes` and `Release` carry
 #      `startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch'`
 #      -- BLO-37063. kres emits the bare `startsWith(github.ref, 'refs/tags/')`,
