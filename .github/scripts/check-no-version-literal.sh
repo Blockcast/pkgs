@@ -120,6 +120,14 @@ scan() {
     # alone on the remainder for the whole-line arm -- but that rescue
     # vanishes inside `{...}`, which is why it is not evidence of coverage.
     #
+    # The set is "separators that are valid in YAML or in shell", which is the
+    # whole realistic surface: every form a pin and a literal can actually
+    # share a line in this repo routes through one of these six. It is not the
+    # set of all ASCII punctuation. `)`, `]` and `"` each still fail open --
+    # `(CRANE_VER=v0.20.2)TALOS=v1.13.4` reads clean -- but every shape that
+    # reaches them is neither valid YAML nor valid shell. Stated so the
+    # boundary is falsifiable: a counter-example that parses is a bug report.
+    #
     # An *absent* value (a YAML key whose value is on the next line) redacts
     # fine, but the continuation line carries no pin token at all, so
     # redaction there is a no-op and the whole-line arm flags it: `CRANE_VER:`
@@ -271,17 +279,35 @@ self_test() {
   probe "two pins on one line stay quiet" pass \
     '          CRANE_VER=v0.20.2 CRANE_VERSION=v0.21.2' c.sh
   # The pin's *value* is bounded at the separators a version cannot contain,
-  # not just at whitespace. One probe per separator family, because reverting
-  # half the class is a mutation that would otherwise survive: this one covers
-  # `{`/`,`/`}` -- the YAML flow mapping, the only one of these shapes that is
-  # idiomatic rather than merely legal...
+  # not just at whitespace. One probe per *character*, not per family: measured
+  # per-character, a probe only ever pins the one separator it actually
+  # contains, so the two-probe "covers `{`/`,`/`}` and `;`/`&`/`|`" split this
+  # replaces left four of the six free -- dropping `&`, `|`, `{` or `}` alone,
+  # or narrowing the whole class to `[^[:space:],;]*`, was 36/36 green while
+  # the `&&` and `|` forms went silently clean again. Each probe below reds
+  # when its own character is dropped from the class, and nothing else does.
+  # The first four shapes are the realistic ones and all four were silently
+  # clean before BLO-40232's second pass: the greedy value swallowed the
+  # separator and the real literal with it.
   probe "literal after a pin in a flow mapping" catch \
     '      env: {CRANE_VER: v0.20.2,TALOS: v1.13.4}'
-  # ...and this one covers `;`/`&`/`|`, the shell separators. Both went
-  # silently clean before BLO-40232's second pass: the greedy value swallowed
-  # the separator and the real literal with it.
   probe "literal after a pin past a shell separator" catch \
     '          CRANE_VER=v0.20.2;TALOS=v1.13.4' c.sh
+  probe "literal after a pin past &&" catch \
+    '          CRANE_VER=v0.20.2&&TALOS=v1.13.4' c.sh
+  probe "literal after a pin past a pipe" catch \
+    '          CRANE_VER=v0.20.2|TALOS=v1.13.4' c.sh
+  # The last two are legal but not idiomatic, and they are the *only* shapes
+  # that pin `{` and `}`: a brace has to fall immediately after a value to
+  # bound it, which rules out the flow mapping above (its `{` sits before the
+  # pin name, and in `v0.20.2{x}` the `}` bounds first). Kept as probes rather
+  # than as an UNPINNED note because a one-line fixture that reds is cheaper
+  # than a paragraph claiming the character is unreachable -- which is what
+  # the per-character sweep above disproved.
+  probe "literal after a pin past an open brace" catch \
+    '          CRANE_VER=v0.20.2{TALOS=v1.13.4' c.sh
+  probe "literal after a pin past a close brace" catch \
+    '      {CRANE_VER: v0.20.2}TALOS: v1.13.4'
   # The re-test has to see the content, not grep -rn's `path:line:` prefix.
   # This line's literal is caught only by PATTERN's `^`-anchored whole-line
   # arm, so it is the one shape that needs the prefix stripped off first. Goes
