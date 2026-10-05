@@ -158,9 +158,10 @@ scan() {
     # failure, which is why this says so rather than claiming a probe covers
     # it (BLO-40232).
     #
-    # The re-test runs on the *content*, with grep -rn's `path:line:` prefix
-    # stripped. PATTERN's whole-line arm is `^`-anchored, and against the
-    # prefixed string that anchor can never fire, so `v1.13.4 CRANE_VER: v0.20.2`
+    # The redact and the re-test both run on the *content*, with grep -rn's
+    # `path:line:` prefix stripped off first. PATTERN's whole-line arm is
+    # `^`-anchored, and against the prefixed string that anchor can never fire,
+    # so `v1.13.4 CRANE_VER: v0.20.2`
     # would read clean. When the prefix will not parse -- `^[^:]*` cannot cross
     # a colon in the path -- the line is kept rather than re-tested: a false
     # positive is loud, and a guard that fails open is worse than no guard.
@@ -171,13 +172,19 @@ scan() {
     # is absurd as a filename, and the narrower the path test the more ordinary
     # paths it fails on.
     #
-    # The `(^|[^A-Za-z0-9_])` that anchors the name on the left is part of the
+    # The `(^|[^-.A-Za-z0-9_])` that anchors the name on the left is part of the
     # match, so the gsub eats that one leading character along with the pin.
-    # It is always a separator -- a word character there is what the anchor
-    # refuses -- and every PATTERN arm either starts at a word character or is
-    # `^`-anchored over leading whitespace, so dropping one separator cannot
-    # turn a hit into a miss. `TALOS=v1.13.4,CRANE_VER=v0.20.2` loses the
-    # comma and still reds.
+    # That is why the strip has to run *first*: against the prefixed string the
+    # character before a column-0 pin is the `path:line:` prefix's own trailing
+    # colon, the gsub eats it, the strip then fails and the fail-closed arm reds
+    # a correct tool pin -- with a message telling the author to move it to
+    # Pkgfile, which is wrong advice for one. Stripping first also makes the `^`
+    # alternative mean what it reads as; against the prefix it could never fire.
+    # On the content the eaten character is always a separator -- a word
+    # character there is what the anchor refuses -- and every PATTERN arm either
+    # starts at a word character or is `^`-anchored over leading whitespace, so
+    # dropping one separator cannot turn a hit into a miss.
+    # `TALOS=v1.13.4,CRANE_VER=v0.20.2` loses the comma and still reds.
     PAT="$PATTERN" AL="$ALLOW" awk '
       BEGIN {
         pat = ENVIRON["PAT"]
@@ -185,8 +192,9 @@ scan() {
       }
       {
         rest = $0
+        if (!sub(/^[^:]*:[0-9]+:/, "", rest)) { print; next }
         gsub(pin, "", rest)
-        if (!sub(/^[^:]*:[0-9]+:/, "", rest) || rest ~ pat) print
+        if (rest ~ pat) print
       }' |
     # "drop $EXEMPT lines unless they are a `default:`" needs a negative
     # lookahead, which ERE has not; awk is the one stage that can express it.
@@ -276,6 +284,13 @@ self_test() {
 
   # False positives that would red the build on correct code.
   probe "tool pin left alone"     pass  '          CRANE_VER="v0.20.2"'
+  # The same pin unindented, which is the idiom in shell. Covers two things at
+  # once, both of which this guard got wrong before: the strip has to run
+  # before the gsub, or the character the left-anchor eats here is the
+  # `path:line:` prefix's own colon and a correct pin reds; and the `^`
+  # alternative in that anchor only reaches position 1 once the prefix is gone,
+  # so without this probe deleting `^|` is a surviving mutation.
+  probe "tool pin at column 0"    pass  'CRANE_VER=v0.20.2' c.sh
   # The same tool under its other live name. $ALLOW is anchored to the end of
   # the name, so this is NOT covered by the CRANE_VER entry -- it needs its own.
   # This reds if the CRANE_VERSION alternative is dropped, which is how the
@@ -335,9 +350,10 @@ self_test() {
   # `}` bounds first). Both are shell, and both are legal-but-unidiomatic
   # there -- measured, `sh -n` accepts each as a single assignment word. The
   # close-brace fixture was written as YAML (`{CRANE_VER: v0.20.2}TALOS:
-  # v1.13.4`) and is *not* valid YAML -- go-yaml rejects it, "did not find
-  # expected key", trailing content after a flow mapping -- so the claim and
-  # the fixture disagreed. Moved to shell rather than softened in prose: the
+  # v1.13.4`) and is *not* valid YAML -- go-yaml (yq v4.44.3) rejects it with
+  # "did not find expected key", trailing content after a flow mapping -- so
+  # the claim and the fixture disagreed. Moved to shell rather than softened in
+  # prose: the
   # shape still pins `}`, and now the one word covering both halves is one
   # that was measured for both. Kept as probes rather than as an UNPINNED note
   # because a one-line fixture that reds is cheaper than a paragraph claiming
