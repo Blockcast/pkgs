@@ -168,7 +168,10 @@ trap 'rm -rf "$stub"' EXIT
 cat > "$stub/curl" <<'STUB'
 #!/usr/bin/env bash
 # Test stub. Never makes a request: exits STUB_CURL_EXIT when set, else prints
-# STUB_CURL_BODY. Ignores its arguments, including the --config curlrc.
+# STUB_CURL_BODY. Records its argv to STUB_CURL_ARGV, one argument per line, so
+# the OUTBOUND half of the call site -- the scope asked for, and whether the
+# credential curlrc is attached at all -- can be asserted too.
+[[ -n "${STUB_CURL_ARGV:-}" ]] && printf '%s\n' "$@" > "$STUB_CURL_ARGV"
 [[ -n "${STUB_CURL_EXIT:-}" ]] && exit "$STUB_CURL_EXIT"
 printf '%s' "${STUB_CURL_BODY:-}"
 STUB
@@ -187,14 +190,16 @@ print(json.dumps({"token": "header.%s.signature" % payload}))
 PY
 }
 
-# Runs the script against the stub. Sets RC / OUT / SUMMARY.
+# Runs the script against the stub. Sets RC / OUT / SUMMARY / ARGV.
 run_preflight() {
-  local summary_file; summary_file=$(mktemp)
+  local summary_file argv_file; summary_file=$(mktemp); argv_file=$(mktemp)
   RC=0
   OUT=$(PATH="$stub:$PATH" HARBOR_USERNAME=u HARBOR_PASSWORD=p \
-        GITHUB_STEP_SUMMARY="$summary_file" bash "$script" 2>&1) || RC=$?
+        GITHUB_STEP_SUMMARY="$summary_file" STUB_CURL_ARGV="$argv_file" \
+        bash "$script" 2>&1) || RC=$?
   SUMMARY=$(cat "$summary_file")
-  rm -f "$summary_file"
+  ARGV=$(cat "$argv_file")
+  rm -f "$summary_file" "$argv_file"
 }
 
 has() { case "$2" in *"$1"*) echo yes ;; *) echo no ;; esac; }
@@ -208,6 +213,17 @@ check "ok arm exits 0"                  "0"   "$RC"
 check "ok arm says PASS"                "yes" "$(has 'PASS: this credential may push' "$OUT")"
 check "ok arm summarises the verdict"   "yes" "$(has 'verdict: **ok**' "$SUMMARY")"
 check "ok arm files no credential ask"  "no"  "$(has 'Named credential ask' "$SUMMARY")"
+
+# The OUTBOUND half (Ally, BLO-39281). Every check above reads what came BACK,
+# and the stub answers the same whatever it is asked, so the request itself was
+# unpinned: asking only for pull reports a push-capable principal as no-push and
+# routes a credential ask for a grant that already exists; asking about another
+# repository answers a question nobody posed; dropping the curlrc probes
+# anonymously, which reports no-push for every principal.
+check "asks Harbor for push, not just pull" "yes" \
+  "$(has "scope=repository:$REPO:push,pull" "$ARGV")"
+check "asks about OUR repository"           "yes" "$(has "repository:$REPO:" "$ARGV")"
+check "sends the credential curlrc"         "yes" "$(has '--config' "$ARGV")"
 
 STUB_CURL_BODY=$(token_json "$REPO" "pull"); run_preflight
 check "no-push arm exits 1"             "1"   "$RC"

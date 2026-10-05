@@ -235,4 +235,38 @@ open(path, "w").write(s[:start] + s[end:])
 PY
 assert_caught "credential ask dropped from the summary (actionable half is log-only again)"
 
+# 13-15. The OUTBOUND request (Ally, BLO-39281). The verdict arms above are all
+#    asserted on what Harbor sends BACK; these cut what the script ASKS, which
+#    the stub previously ignored, so each one left the whole suite green.
+
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = 'scope=repository:$REPOSITORY:push,pull"'
+assert old in s, "token scope not found -- update this mutation"
+open(path, "w").write(s.replace(old, 'scope=repository:$REPOSITORY:pull"', 1))
+PY
+assert_caught "scope narrowed to pull (a push-capable principal reads as no-push)"
+
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = 'scope=repository:$REPOSITORY:'
+assert old in s, "token scope repository not found -- update this mutation"
+open(path, "w").write(s.replace(old, 'scope=repository:library/other:', 1))
+PY
+assert_caught "scope names another repository (the verdict answers an unasked question)"
+
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = ' --config "$cfg/curlrc"'
+assert old in s, "curlrc attachment not found -- update this mutation"
+open(path, "w").write(s.replace(old, '', 1))
+PY
+assert_caught "curlrc not attached (an anonymous probe reads as no-push for everyone)"
+
 echo "all mutations caught"
