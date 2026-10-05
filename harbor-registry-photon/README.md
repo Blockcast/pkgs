@@ -8,8 +8,10 @@
 image — entrypoint, user, healthcheck, volumes, the other files — is the stock
 image, byte for byte.
 
-Published as `ghcr.io/blockcast/harbor-registry-photon:v2.14.0-taglookup.1`
-(`./build.sh --print-tag`).
+Published as `ghcr.io/blockcast/harbor-registry-photon:v2.14.0-taglookup.2`
+(`./build.sh --print-tag`). **Do not deploy `v2.14.0-taglookup.1`:** it was
+published before deviation 1 below existed, so a cancelled manifest `DELETE`
+can answer `202` and leave tags pointing at the deleted manifest.
 
 ## Why
 
@@ -40,7 +42,8 @@ fix this.**
 
 - `tagStore.Lookup` reads tag links through an `errgroup` bounded by the tag
   store's concurrency limit. The first non-`PathNotFound` error cancels the
-  remaining reads and fails the lookup — never a partial tag set.
+  remaining reads and fails the lookup, and so does a cancelled caller
+  context — never a partial tag set.
 - `DeleteManifest` untags the referencing tags through an `errgroup` bounded
   by `storage.DefaultConcurrencyLimit`.
 - New `RegistryOption` `TagLookupConcurrencyLimit` and config key
@@ -53,15 +56,27 @@ fix this.**
   hand-rolled worker pool so the code stays line-for-line comparable with
   upstream, which is what makes a future rebase or upstream sync mechanical.
 
-**One deliberate deviation from upstream.** Upstream's concurrent untag loop
-assigns the collected errors to the response and then writes `202 Accepted`
-anyway, so a manifest `DELETE` that left dangling tags reports success. The
-serial code it replaced returned the error instead. This backport keeps the
-fail-closed behaviour: any `Untag` error means no `202`.
+**Two deliberate deviations from upstream.** Both restore the fail-closed
+behaviour of the serial code upstream replaced; without them a manifest
+`DELETE` can answer `202 Accepted` while tags still point at the deleted
+manifest.
+
+1. **Cancelled lookup.** Upstream's `Lookup` shadows `ctx` with the errgroup's
+   context and stops launching link reads once it is done; `g.Wait()` then
+   returns nil and `Lookup` returns the tags read so far with no error. The
+   handler's context is the request's, so a client disconnect or a jobservice
+   timeout cancels it after `DeleteManifest` has already deleted the manifest;
+   upstream then untags only that partial set and writes `202`. Here `Lookup`
+   keeps the caller's context and, after `g.Wait()`, returns its error if it
+   is done.
+2. **Failed untag.** Upstream's concurrent untag loop assigns the collected
+   errors to the response and then writes `202 Accepted` anyway. Here any
+   `Untag` error means no `202`.
 
 Not ported: upstream also added `tag: concurrencylimit: 8` to its example
-config files. That `8` has no derivation, so it is left out; the default stays
-`GOMAXPROCS`, as the upstream docs describe.
+config files and shows `8` in `docs/configuration.md`. That `8` has no
+derivation: the example config files are left unchanged and the ported docs
+show a placeholder, so the default stays `GOMAXPROCS`.
 
 ### Tests
 
@@ -72,15 +87,20 @@ Ported: upstream's `configuration` test for the `tag` section. Added:
 | `TestTagLookupMatchesSerial` | concurrent `Lookup` returns exactly the tag set of the verbatim serial algorithm, per digest, over `16 x limit` tags across 7 digests with every 5th tag's `current/link` removed (listed by `All()`, must be skipped) |
 | `TestTagLookupConcurrencyIsBounded` | link reads reach exactly `limit` in flight and never exceed it; every read blocks until `limit` are in flight, so a serial implementation never completes |
 | `TestTagLookupPropagatesStorageError` | a backend error on one tag fails the lookup and returns no partial result |
+| `TestTagLookupCancelledContextFails` | deviation 1: a context cancelled before, or during, the lookup fails it with `context.Canceled` and no partial result |
 | `TestTagLookupConcurrencyLimitOption` | unset/`0` → `GOMAXPROCS`; explicit value is used |
 | `TestNewAppTagConcurrencyLimitConfig` | config validation: absent/0/positive accepted; string and negative panic |
 | `TestDeleteManifestUntagsAllReferencingTags` | a manifest referenced by `4 x GOMAXPROCS + 1` tags deletes with 202 and leaves no referencing tag |
-| `TestDeleteManifestUntagFailureFailsClosed` | the deviation above: failing untag → no 202 |
+| `TestDeleteManifestUntagFailureFailsClosed` | deviation 2: failing untag → no 202 |
+| `TestDeleteManifestCancelledRequestNot202` | deviation 1: a `DELETE` whose request context is cancelled during the tag lookup → no 202 (500 `context canceled`) |
 
 Negative controls were run: with `Lookup` reverted to the serial loop the
 bounded test never completes (`go test -timeout` fires); with upstream's
 verbatim `imh.Errors = errs` + 202 the fail-closed test fails with "DELETE
-returned 202 Accepted although every Untag failed".
+returned 202 Accepted although every Untag failed"; with upstream's verbatim
+`Lookup` all three cancellation tests fail, each with a partial or empty tag
+set and no error, or a `202` with tags still referencing the deleted manifest
+(the counts depend on `GOMAXPROCS` and scheduling).
 
 The Dockerfile runs `go vet -printf=false` and `go test` on `configuration`,
 `registry/storage` and `registry/handlers` (plus a `-race` pass of the new
@@ -99,6 +119,7 @@ All inputs live in `release.env`; the Dockerfile has no defaults and
 | `DISTRIBUTION_SHA` | the base binary's build info: `-X version.Revision=0c62ec3e…` |
 | `DISTRIBUTION_DESCRIBE` | the base binary's `--version`: `v2.8.3-23-g0c62ec3e` (checked against `git describe` during the build) |
 | `GOLANG_IMAGE` | the base binary's `go version -m`: `go1.24.6`, which is also Harbor v2.14.0's `GOBUILDIMAGE=golang:1.24.6`; pinned by index digest |
+| Dockerfile frontend (`# syntax=` line) | `docker/dockerfile:1.27.1@sha256:4edf897a…`: the digest the floating `docker/dockerfile:1` resolved to in PR #19's CI run (37225451364), which is also `1.27.1`'s. The frontend parses and runs the whole build, so it is pinned like a base image. It lives in the `Dockerfile`, not `release.env`, because BuildKit reads it before any build arg exists |
 
 The binary is built the way Harbor's `make/photon/registry/Dockerfile.binary`
 builds it — GOPATH mode, `CGO_ENABLED=0`, `BUILDTAGS="include_oss include_gcs"`,
@@ -107,7 +128,7 @@ it identifies itself:
 
 ```
 $ registry_DO_NOT_USE_GC --version
-/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-23-g0c62ec3e+blockcast-taglookup.1
+/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-23-g0c62ec3e+blockcast-taglookup.2
 ```
 
 `REVISION` is `<DISTRIBUTION_SHA>+patch.sha256.<sha256 of the patch files>`.
@@ -124,9 +145,14 @@ reports the patched string.
 ```
 
 `--push` never repoints a published tag: change anything here, bump
-`PATCH_REVISION`. CI (`.github/workflows/harbor-registry-photon.yaml`) runs
-`--check` on pull requests and `--push` on `main`, and writes the pushed digest
-to the job summary. Deploy by that digest, not by tag.
+`PATCH_REVISION`. That includes the workflow file — a merge to `main` that
+touches it re-runs `--push`, which stops on the existing tag and turns `main`
+red. The one exception is this README: `main` pushes that change only
+`README.md` do not trigger the workflow. CI (`.github/workflows/harbor-registry-photon.yaml`) runs
+`--check` on pull requests whose head is in this repository (fork PRs never
+reach the privileged self-hosted runner) and `--push` on `main`, in a separate
+job that alone holds `packages: write`, and writes the pushed digest to the job
+summary. Deploy by that digest, not by tag.
 
 ## Rolling it out — read before touching the Harbor config
 
@@ -135,10 +161,17 @@ to the job summary. Deploy by that digest, not by tag.
    storage driver (`must provide exactly one storage type. Provided:
    [<driver> tag]`) and exits. With no `tag` key the patched binary uses
    `GOMAXPROCS`; the live pod has no CPU limit, so that is the node's CPU count.
+   **If a CPU limit is ever added to the registry pod, set
+   `storage.tag.concurrencylimit` explicitly at the same time.** The binary is
+   built with go1.24.6, whose `GOMAXPROCS` default is the host's CPU count and
+   ignores cgroup CPU limits (container-aware `GOMAXPROCS` arrived in go1.25),
+   and both bounds — tag lookup and untag (`storage.DefaultConcurrencyLimit`)
+   — are computed once at startup, so a CPU limit lowers neither. The untag
+   bound has no config key in upstream either.
 2. Only once every `harbor-registry` replica runs the patched image, set
    `storage.tag.concurrencylimit` in the registry config if a bound other than
    `GOMAXPROCS` is wanted — derive it from what the RGW endpoint can absorb,
-   not from the example `8`.
+   not from upstream's example `8`.
 3. **Rollback order is the reverse:** remove `storage.tag` from the config
    *before* going back to the stock image, or the stock binary will not start.
 4. The image is pushed to ghcr; the cluster needs pull access to it (or the

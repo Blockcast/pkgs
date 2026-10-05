@@ -1,8 +1,9 @@
 # Build the patched Harbor registry-photon image (harbor-registry-photon/).
 #
-#   pull_request -> ./build.sh --check   (build + tests + verification, no push)
-#   push to main -> ./build.sh --push    (refuses to repoint an existing tag)
-#   workflow_dispatch -> --push on main, --check on any other ref
+#   pull_request (same-repo head only) -> job `check`:   ./build.sh --check
+#   workflow_dispatch on a non-main ref -> job `check`:   ./build.sh --check
+#   push to main / dispatch on main     -> job `publish`: ./build.sh --push
+#                                          (refuses to repoint an existing tag)
 #
 # The image reference and every pin come from harbor-registry-photon/release.env;
 # nothing about the image is defined in this file.
@@ -13,6 +14,12 @@
 # in the `default` group (public repos allowed) and ran this repo's
 # compose-signed-installer job on 2026-10-04. The build uses the job's own dind
 # daemon, so it does not depend on the in-cluster remote buildkit endpoints.
+#
+# Fork PRs never run here. The repo is public and its fork-PR approval policy
+# is `first_time_contributors`, so a fork PR from anyone who has contributed
+# before would run its own build.sh/Dockerfile on the self-hosted, privileged
+# arc-dind runner with no approval. `check` therefore only runs PRs whose head
+# is in this repository, and only `publish` (main) gets packages: write.
 
 name: harbor-registry-photon
 
@@ -26,8 +33,11 @@ on:
   push:
     branches:
       - main
+    # README-only changes do not change the image; publishing them would hit
+    # build.sh's "tag already exists" refusal unless PATCH_REVISION is bumped.
     paths:
       - 'harbor-registry-photon/**'
+      - '!harbor-registry-photon/README.md'
       - '.github/workflows/harbor-registry-photon.yaml'
   workflow_dispatch: {}
 
@@ -39,13 +49,15 @@ permissions:
   contents: read
 
 jobs:
-  image:
+  check:
+    if: >-
+      (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository)
+      || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
     runs-on: arc-dind
     permissions:
       contents: read
-      packages: write
     env:
-      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
       GIT_COMMIT: ${{ github.sha }}
     steps:
       - name: checkout
@@ -61,29 +73,41 @@ jobs:
         with:
           driver: docker
 
-      - name: Image reference
-        id: ref
+      - name: Build and verify (no push)
         run: |
           set -euo pipefail
           ref="$(harbor-registry-photon/build.sh --print-tag)"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "image: $ref (publish=$PUBLISH)"
-
-      - name: Build and verify (no push)
-        if: env.PUBLISH != 'true'
-        env:
-          REF: ${{ steps.ref.outputs.ref }}
-        run: |
-          set -euo pipefail
+          echo "image: $ref (not published)"
           harbor-registry-photon/build.sh --check
           {
             echo "### harbor-registry-photon"
             echo "- built and verified, **not pushed** (\`${GITHUB_EVENT_NAME}\` on \`${GITHUB_REF}\`)"
-            echo "- would publish: \`${REF}\`"
+            echo "- would publish: \`${ref}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: arc-dind
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GIT_COMMIT: ${{ github.sha }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # version: v6.0.2
+
+      - name: Docker daemon
+        run: |
+          set -euo pipefail
+          docker version || { echo "docker daemon not reachable -- check dind / DOCKER_HOST" >&2; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # version: v4.1.0
+        with:
+          driver: docker
+
       - name: Login to ghcr.io
-        if: env.PUBLISH == 'true'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # version: v4.2.0
         with:
           registry: ghcr.io
@@ -91,14 +115,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build, verify and push
-        if: env.PUBLISH == 'true'
         id: push
         run: |
           set -euo pipefail
           harbor-registry-photon/build.sh --push
 
       - name: Record digest
-        if: env.PUBLISH == 'true'
         env:
           REF: ${{ steps.push.outputs.ref }}
           DIGEST: ${{ steps.push.outputs.digest }}
