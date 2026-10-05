@@ -1,4 +1,4 @@
-From ee27c2e9ffd07bb91d95a3972dc9d8f889d0552d Mon Sep 17 00:00:00 2001
+From caef49f5546aec553d085ba8d43855f5c9bad689 Mon Sep 17 00:00:00 2001
 From: Players Engineer <omar@blockcast.network>
 Date: Sun, 4 Oct 2026 21:04:50 +0300
 Subject: [PATCH] registry: concurrent bounded tag lookup and untag (backport
@@ -26,39 +26,54 @@ count times the storage backend's per-object round trip.
 - Vendors golang.org/x/sync/errgroup at v0.3.0 (93782cc8), the version
   upstream's go.mod pinned at a2afe23f38, recorded in vendor.conf.
 
-Deviation from upstream: upstream DeleteManifest assigns the collected
-Untag errors to imh.Errors and then writes 202 Accepted anyway. This
-backport keeps the pre-existing fail-closed behaviour instead: if any
-Untag fails, the handler returns the errors without writing 202.
+Deliberate deviations from upstream, both restoring the fail-closed
+behaviour of the serial code this replaces:
 
-Upstream's example config files set concurrencylimit: 8; they are not
-changed here so the default stays GOMAXPROCS, as documented.
+1. Cancelled lookup. Upstream shadows ctx with the errgroup's context and
+   stops launching link reads once it is done; g.Wait() then returns nil
+   and Lookup returns the tags read so far with no error. The request
+   context is cancelled on client disconnect or caller timeout, so
+   DeleteManifest (which has already deleted the manifest) untags only a
+   partial set and answers 202, leaving the other tags pointing at the
+   deleted manifest. Here Lookup keeps the caller's context and, after
+   g.Wait(), returns its error if it is done -- never a partial set.
+2. Failed untag. Upstream DeleteManifest assigns the collected Untag
+   errors to imh.Errors and then writes 202 Accepted anyway. Here, if any
+   Untag fails, the handler returns the errors without writing 202.
+
+Upstream's example config files set concurrencylimit: 8, and its
+docs/configuration.md shows 8 in the sample config and the tag example.
+That 8 has no derivation: the example config files are left unchanged
+and the ported docs show a placeholder instead, so the documented
+default stays GOMAXPROCS.
 
 Tests: upstream configuration test ported; new storage tests compare the
 concurrent Lookup with the verbatim serial algorithm over many tags with
 missing links, prove the read concurrency reaches and never exceeds the
-limit, and check error propagation; new handler tests cover the config
-validation, multi-tag untag on DELETE, and the fail-closed 202 deviation.
+limit, check error propagation, and check that a context cancelled
+before or during the lookup fails it; new handler tests cover the config
+validation, multi-tag untag on DELETE, the fail-closed 202 on a failing
+untag, and no 202 for a request cancelled during the tag lookup.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 ---
  configuration/configuration.go                |  17 +
  configuration/configuration_test.go           |   8 +
- docs/configuration.md                         |  22 ++
+ docs/configuration.md                         |  22 +
  registry/handlers/app.go                      |  15 +
  registry/handlers/manifests.go                |  34 +-
- registry/handlers/tag_concurrency_test.go     | 188 ++++++++++
+ registry/handlers/tag_concurrency_test.go     | 303 +++++++++++++
  registry/storage/registry.go                  |  22 +-
- registry/storage/tagstore.go                  |  62 +++-
- registry/storage/tagstore_concurrency_test.go | 331 ++++++++++++++++++
+ registry/storage/tagstore.go                  |  73 +++-
+ registry/storage/tagstore_concurrency_test.go | 404 ++++++++++++++++++
  vendor.conf                                   |   1 +
  vendor/golang.org/x/sync/LICENSE              |  27 ++
- vendor/golang.org/x/sync/PATENTS              |  22 ++
- vendor/golang.org/x/sync/README.md            |  20 ++
- vendor/golang.org/x/sync/errgroup/errgroup.go | 132 +++++++
+ vendor/golang.org/x/sync/PATENTS              |  22 +
+ vendor/golang.org/x/sync/README.md            |  20 +
+ vendor/golang.org/x/sync/errgroup/errgroup.go | 132 ++++++
  vendor/golang.org/x/sync/errgroup/go120.go    |  14 +
  .../golang.org/x/sync/errgroup/pre_go120.go   |  15 +
- 16 files changed, 906 insertions(+), 24 deletions(-)
+ 16 files changed, 1105 insertions(+), 24 deletions(-)
  create mode 100644 registry/handlers/tag_concurrency_test.go
  create mode 100644 registry/storage/tagstore_concurrency_test.go
  create mode 100644 vendor/golang.org/x/sync/LICENSE
@@ -144,7 +159,7 @@ index 48cc9980..d0299ed1 100644
  		Bugsnag:  BugsnagReporting{config.Reporting.Bugsnag.APIKey, config.Reporting.Bugsnag.ReleaseStage, config.Reporting.Bugsnag.Endpoint},
  		NewRelic: NewRelicReporting{config.Reporting.NewRelic.LicenseKey, config.Reporting.NewRelic.Name, config.Reporting.NewRelic.Verbose},
 diff --git a/docs/configuration.md b/docs/configuration.md
-index 75f52dea..46b8b999 100644
+index 75f52dea..348ac390 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -152,6 +152,8 @@ storage:
@@ -152,7 +167,7 @@ index 75f52dea..46b8b999 100644
      rootdirectory: optional root directory
    inmemory:  # This driver takes no parameters
 +  tag:
-+    concurrencylimit: 8
++    concurrencylimit: optional tag lookup concurrency
    delete:
      enabled: false
    redirect:
@@ -177,7 +192,7 @@ index 75f52dea..46b8b999 100644
 +
 +```yaml
 +tag:
-+  concurrencylimit: 8
++  concurrencylimit: <n>  # non-negative integer; unset or 0 means GOMAXPROCS
 +```
 +
  ### `redirect`
@@ -274,10 +289,10 @@ index 0d8b6588..ad5836d0 100644
  	w.WriteHeader(http.StatusAccepted)
 diff --git a/registry/handlers/tag_concurrency_test.go b/registry/handlers/tag_concurrency_test.go
 new file mode 100644
-index 00000000..e8197e52
+index 00000000..e179bd14
 --- /dev/null
 +++ b/registry/handlers/tag_concurrency_test.go
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,303 @@
 +package handlers
 +
 +import (
@@ -285,8 +300,10 @@ index 00000000..e8197e52
 +	"errors"
 +	"fmt"
 +	"net/http"
++	"net/http/httptest"
 +	"regexp"
 +	"strings"
++	"sync"
 +	"testing"
 +
 +	"github.com/distribution/reference"
@@ -303,7 +320,10 @@ index 00000000..e8197e52
 +// concurrency limits for tag lookup and untag") onto goharbor/distribution
 +// release/2.8.
 +
-+const untagFailDriverName = "untagfaildriver"
++const (
++	untagFailDriverName      = "untagfaildriver"
++	cancelOnLookupDriverName = "cancelonlookupdriver"
++)
 +
 +// tagDirPath matches the manifestTagPathSpec directory that tagStore.Untag
 +// deletes: <root>/v2/repositories/<name>/_manifests/tags/<tag>
@@ -313,6 +333,7 @@ index 00000000..e8197e52
 +
 +func init() {
 +	factory.Register(untagFailDriverName, &untagFailDriverFactory{})
++	factory.Register(cancelOnLookupDriverName, &cancelOnLookupDriverFactory{})
 +}
 +
 +type untagFailDriverFactory struct{}
@@ -466,6 +487,115 @@ index 00000000..e8197e52
 +	}
 +	checkResponse(t, "deleting manifest with failing untag", resp, http.StatusInternalServerError)
 +}
++
++// cancelOnLookupDriver calls the armed cancel func the first time a tag's
++// current link is read (that is, inside tagStore.Lookup) and still completes
++// the read, so the cancellation lands in the middle of the lookup.
++type cancelOnLookupDriver struct {
++	storagedriver.StorageDriver
++
++	mu     sync.Mutex
++	cancel context.CancelFunc
++}
++
++type cancelOnLookupDriverFactory struct{}
++
++var (
++	cancelOnLookupDriversMu sync.Mutex
++	cancelOnLookupDrivers   []*cancelOnLookupDriver
++)
++
++func (f *cancelOnLookupDriverFactory) Create(parameters map[string]interface{}) (storagedriver.StorageDriver, error) {
++	d := &cancelOnLookupDriver{StorageDriver: inmemory.New()}
++	cancelOnLookupDriversMu.Lock()
++	cancelOnLookupDrivers = append(cancelOnLookupDrivers, d)
++	cancelOnLookupDriversMu.Unlock()
++	return d, nil
++}
++
++func (d *cancelOnLookupDriver) arm(cancel context.CancelFunc) {
++	d.mu.Lock()
++	d.cancel = cancel
++	d.mu.Unlock()
++}
++
++func (d *cancelOnLookupDriver) GetContent(ctx context.Context, path string) ([]byte, error) {
++	if strings.HasSuffix(path, "/current/link") {
++		d.mu.Lock()
++		cancel := d.cancel
++		d.cancel = nil
++		d.mu.Unlock()
++		if cancel != nil {
++			cancel()
++		}
++	}
++	return d.StorageDriver.GetContent(ctx, path)
++}
++
++// TestDeleteManifestCancelledRequestNot202: a DELETE whose request context is
++// cancelled while DeleteManifest is looking up the referencing tags (client
++// disconnect, caller timeout) must not report 202 Accepted. Upstream
++// a2afe23f38's Lookup returns the tags read so far with a nil error in that
++// case, so the handler untags only some of them and answers 202, leaving the
++// rest pointing at the deleted manifest.
++func TestDeleteManifestCancelledRequestNot202(t *testing.T) {
++	cancelOnLookupDriversMu.Lock()
++	cancelOnLookupDrivers = nil
++	cancelOnLookupDriversMu.Unlock()
++
++	env := newTestEnvWithConfig(t, tagConcurrencyTestConfig(cancelOnLookupDriverName, nil))
++	defer env.Shutdown()
++
++	cancelOnLookupDriversMu.Lock()
++	drivers := append([]*cancelOnLookupDriver(nil), cancelOnLookupDrivers...)
++	cancelOnLookupDriversMu.Unlock()
++	if len(drivers) != 1 {
++		t.Fatalf("expected the app to create exactly one %s driver, got %d", cancelOnLookupDriverName, len(drivers))
++	}
++	driver := drivers[0]
++
++	imageName := "foo/cancelled-delete"
++	dgst := createRepository(env, t, imageName, "latest")
++
++	named, _ := reference.WithName(imageName)
++	repo, err := env.app.registry.Repository(env.ctx, named)
++	if err != nil {
++		t.Fatal(err)
++	}
++	tags := repo.Tags(env.ctx)
++	// More referencing tags than lookup worker slots, so some remain unread
++	// when the cancellation lands, whatever the scheduling.
++	extra := 4*storage.DefaultConcurrencyLimit + 1
++	for i := 0; i < extra; i++ {
++		if err := tags.Tag(env.ctx, fmt.Sprintf("extra-%d", i), distribution.Descriptor{Digest: dgst}); err != nil {
++			t.Fatal(err)
++		}
++	}
++
++	digestRef, err := reference.WithDigest(named, dgst)
++	if err != nil {
++		t.Fatal(err)
++	}
++	u, err := env.builder.BuildManifestURL(digestRef)
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	req := httptest.NewRequest(http.MethodDelete, u, nil).WithContext(ctx)
++	rec := httptest.NewRecorder()
++
++	driver.arm(cancel)
++	env.app.ServeHTTP(rec, req)
++
++	if ctx.Err() == nil {
++		t.Fatalf("the lookup never read a tag link, so the cancellation was not exercised")
++	}
++	if rec.Code == http.StatusAccepted {
++		remaining, err := tags.Lookup(env.ctx, distribution.Descriptor{Digest: dgst})
++		t.Fatalf("DELETE cancelled during tag lookup returned 202 Accepted; %d tag(s) still reference the deleted manifest (lookup err %v)", len(remaining), err)
++	}
++}
 diff --git a/registry/storage/registry.go b/registry/storage/registry.go
 index 102abb6e..17b4cef4 100644
 --- a/registry/storage/registry.go
@@ -529,7 +659,7 @@ index 102abb6e..17b4cef4 100644
  
  	return tags
 diff --git a/registry/storage/tagstore.go b/registry/storage/tagstore.go
-index a3c766b4..21c6738e 100644
+index a3c766b4..d412c2b7 100644
 --- a/registry/storage/tagstore.go
 +++ b/registry/storage/tagstore.go
 @@ -3,10 +3,13 @@ package storage
@@ -559,12 +689,18 @@ index a3c766b4..21c6738e 100644
  }
  
  // All returns all tags
-@@ -153,26 +157,48 @@ func (ts *tagStore) Lookup(ctx context.Context, desc distribution.Descriptor) ([
+@@ -153,26 +157,59 @@ func (ts *tagStore) Lookup(ctx context.Context, desc distribution.Descriptor) ([
  		return nil, err
  	}
  
 -	var tags []string
-+	g, ctx := errgroup.WithContext(ctx)
++	// Blockcast deviation from upstream a2afe23f38: keep the caller's context.
++	// Upstream shadows ctx with the errgroup's and, once it is done, stops
++	// launching reads; g.Wait() then returns nil and Lookup returns the tags
++	// read so far, so DeleteManifest untags a partial set and answers 202.
++	// The serial loop this replaces never returned a partial set.
++	parent := ctx
++	g, ctx := errgroup.WithContext(parent)
 +	g.SetLimit(ts.concurrencyLimit)
 +
 +	var (
@@ -620,15 +756,20 @@ index a3c766b4..21c6738e 100644
 +	err = g.Wait()
 +	if err != nil {
 +		return nil, err
++	}
++	// Only the caller's context: the errgroup cancels its own as soon as
++	// Wait returns, so checking that one here would fail every lookup.
++	if err := parent.Err(); err != nil {
++		return nil, err
  	}
  
  	return tags, nil
 diff --git a/registry/storage/tagstore_concurrency_test.go b/registry/storage/tagstore_concurrency_test.go
 new file mode 100644
-index 00000000..2b9d753e
+index 00000000..d64ee088
 --- /dev/null
 +++ b/registry/storage/tagstore_concurrency_test.go
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,404 @@
 +package storage
 +
 +import (
@@ -959,6 +1100,79 @@ index 00000000..2b9d753e
 +			}
 +		})
 +	}
++}
++
++// cancelOnReadDriver cancels a context the first time a current link is read,
++// then completes that read (and every later one) successfully, ignoring the
++// context the way a backend call that already finished would.
++type cancelOnReadDriver struct {
++	storagedriver.StorageDriver
++
++	once   sync.Once
++	cancel context.CancelFunc
++}
++
++func (c *cancelOnReadDriver) GetContent(ctx context.Context, path string) ([]byte, error) {
++	if strings.HasSuffix(path, currentLinkSuffix) && c.cancel != nil {
++		c.once.Do(c.cancel)
++	}
++	return c.StorageDriver.GetContent(ctx, path)
++}
++
++// TestTagLookupCancelledContextFails: a lookup whose context is cancelled
++// before it has read every tag link must fail, never return the tags it read
++// so far with a nil error. DeleteManifest untags exactly what Lookup returns
++// and then answers 202, so a short list with no error leaves tags pointing at
++// the deleted manifest. (Upstream a2afe23f38 has this bug: its loop stops
++// launching reads once ctx is done and g.Wait() returns nil.)
++func TestTagLookupCancelledContextFails(t *testing.T) {
++	populate := func(t *testing.T, d storagedriver.StorageDriver) (*tagStore, int) {
++		t.Helper()
++		_, ts := newTestTagStore(t, d)
++		// More tags than worker slots, so tags remain unread after the
++		// cancellation regardless of scheduling.
++		numTags := ts.concurrencyLimit*4 + 2
++		for i := 0; i < numTags; i++ {
++			if err := ts.Tag(context.Background(), fmt.Sprintf("t%d", i), distribution.Descriptor{Digest: digestFor(0)}); err != nil {
++				t.Fatal(err)
++			}
++		}
++		return ts, numTags
++	}
++
++	t.Run("cancelled before lookup", func(t *testing.T) {
++		ts, numTags := populate(t, inmemory.New())
++		ctx, cancel := context.WithCancel(context.Background())
++		cancel()
++		tags, err := ts.Lookup(ctx, distribution.Descriptor{Digest: digestFor(0)})
++		if err == nil {
++			t.Fatalf("Lookup with a cancelled context returned %d of %d tags and no error", len(tags), numTags)
++		}
++		if !errors.Is(err, context.Canceled) {
++			t.Fatalf("Lookup error = %v, want context.Canceled", err)
++		}
++		if tags != nil {
++			t.Fatalf("Lookup returned partial tags %v alongside an error", tags)
++		}
++	})
++
++	t.Run("cancelled during lookup", func(t *testing.T) {
++		cd := &cancelOnReadDriver{StorageDriver: inmemory.New()}
++		ts, numTags := populate(t, cd)
++		ctx, cancel := context.WithCancel(context.Background())
++		defer cancel()
++		cd.cancel = cancel
++		tags, err := ts.Lookup(ctx, distribution.Descriptor{Digest: digestFor(0)})
++		if err == nil {
++			t.Fatalf("Lookup cancelled mid-flight returned %d of %d tags and no error", len(tags), numTags)
++		}
++		if !errors.Is(err, context.Canceled) {
++			t.Fatalf("Lookup error = %v, want context.Canceled", err)
++		}
++		if tags != nil {
++			t.Fatalf("Lookup returned partial tags %v alongside an error", tags)
++		}
++	})
 +}
 diff --git a/vendor.conf b/vendor.conf
 index 4316e785..226bdba8 100644
