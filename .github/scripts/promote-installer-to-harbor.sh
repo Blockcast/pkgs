@@ -37,7 +37,7 @@ set -euo pipefail
 # Split out as a pure function with no registry access so it can be exercised
 # directly -- see test-promote-installer-to-harbor.sh. A guard with no failing
 # mutation is a comment, and this one is the difference between re-publishing a
-# tag the fleet may already be pinned to and refusing to.
+# tag the runbook resolves digests through and refusing to.
 #
 #   existing  destination digest, empty when the tag does not exist
 #   source    digest this run pushed
@@ -61,7 +61,8 @@ promotion_decision() {
     return 0
   fi
 
-  # Tag exists and means something else. A node may be pinned to it.
+  # Tag exists and means something else. The runbook resolves the digest it
+  # pins by reading this tag.
   if [[ "$overwrite" == true ]]; then
     echo copy
     return 0
@@ -154,10 +155,11 @@ case "$DECISION" in
     echo "FATAL: $DESTINATION:$TAG already exists and points at a DIFFERENT image." >&2
     echo "  existing: $EXISTING_DIGEST" >&2
     echo "  source:   $SOURCE_DIGEST" >&2
-    echo "Data nodes pin install.image by digest, but the rollout runbook and the" >&2
-    echo "rollback path both name images by TAG, so repointing one silently changes" >&2
-    echo "what a documented rollback resolves to. Publish under a new tag, or pass" >&2
-    echo "--overwrite if repointing is genuinely intended." >&2
+    echo "Nodes already rolled are unaffected -- install.image is digest-pinned," >&2
+    echo "and the runbook's rollback names digests too. What breaks is the digest" >&2
+    echo "READ: the runbook resolves the digest it pins by reading this tag, so" >&2
+    echo "after a repoint it hands out this build for nodes rolled on the old one." >&2
+    echo "Publish under a new tag, or pass --overwrite if repointing is intended." >&2
     exit 1
     ;;
   copy)
