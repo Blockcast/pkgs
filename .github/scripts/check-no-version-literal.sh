@@ -181,9 +181,16 @@ scan() {
     # Pkgfile, which is wrong advice for one. Stripping first also makes the `^`
     # alternative mean what it reads as; against the prefix it could never fire.
     # On the content the eaten character is always a separator -- a word
-    # character there is what the anchor refuses -- and every PATTERN arm either
-    # starts at a word character or is `^`-anchored over leading whitespace, so
-    # dropping one separator cannot turn a hit into a miss.
+    # character there is what the anchor refuses -- and dropping one cannot turn
+    # a hit into a miss. Three of the four alternatives opening $PATTERN's first
+    # arm start at a word character, and its second arm is `^`-anchored over
+    # leading whitespace; `:[-=?]` is the one that opens on a separator, and its
+    # colon can never *be* the eaten character. The eaten one is whatever
+    # immediately precedes an $ALLOW name, every entry starts `[A-Za-z]`, and
+    # that arm requires `[-=?]` next -- disjoint sets, so the colon it needs is
+    # never the one consumed. Measured: `${x:-v1.13.4}CRANE_VER=v0.20.2` reds
+    # (probed below), as does `A=${B:-v1.13.4} CRANE_VER=v0.20.2`, while the
+    # real pin `${CRANE_VER:-v0.20.2}` stays clean.
     # `TALOS=v1.13.4,CRANE_VER=v0.20.2` loses the comma and still reds.
     PAT="$PATTERN" AL="$ALLOW" awk '
       BEGIN {
@@ -303,6 +310,20 @@ self_test() {
   # probe above is the positive control -- the real pins must stay quiet.
   probe "name merely ending in a pin's name" catch \
     '          MY_CRANE_VER: v1.13.4'
+  # The separator the left-anchor eats is never load-bearing for a $PATTERN
+  # match. `:[-=?]` is the only opening alternative that starts on a separator,
+  # and its colon cannot be the eaten one -- the eaten character precedes an
+  # $ALLOW name, every entry starts `[A-Za-z]`, and this arm needs `[-=?]`
+  # there. So the shell default keeps its colon and still reds with a real pin
+  # butted against it, having lost only the `}`.
+  #
+  # Lowercase `x` is load-bearing: with `X` the leftover `X:` also matches the
+  # `[A-Z_]+[:=]` arm, so the probe would red for the wrong reason and stop
+  # isolating this one. As written it is the only probe that reds when
+  # `:[-=?]` is dropped from $PATTERN -- that arm was carrying no probe at all
+  # before this, i.e. it was a surviving mutation in the suite.
+  probe "separator eaten next to a colon arm" catch \
+    '${x:-v1.13.4}CRANE_VER=v0.20.2' c.sh
   # The two non-word name characters, one probe each: a YAML key may hold `-`
   # or `.` where a shell name may not, so leaving either out of the anchor
   # class re-opens the miss above for that character alone.
