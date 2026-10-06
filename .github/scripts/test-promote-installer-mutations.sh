@@ -97,4 +97,16 @@ open(path, "w").write(s.replace(old, 'anon_digest=$(crane digest', 1))
 PY
 assert_caught "anonymous-pull DOCKER_CONFIG override removed"
 
+# 5. The step summary's `printf --` -- drop it, so the '- '-prefixed format is
+#    parsed as an option and a successful promotion fails its own job.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "printf -- '- source:"
+assert old in s, "step summary printf -- not found -- update this mutation"
+open(path, "w").write(s.replace(old, "printf '- source:", 1))
+PY
+assert_caught "step summary printf -- removed"
+
 echo "all mutations caught"

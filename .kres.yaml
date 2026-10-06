@@ -106,6 +106,7 @@ spec:
     - ipmitool
     - iptables
     - ipxe
+    - json-glib
     - kmod
     - libaio
     - libarchive
@@ -127,6 +128,7 @@ spec:
     - libselinux
     - libsepol
     - libtasn1
+    - libtpms
     - libucontext
     - libunistring
     - liburcu
@@ -149,6 +151,7 @@ spec:
     - sd-boot
     - socat
     - squashfs-tools
+    - swtpm
     - systemd-udevd
     - talosctl-cni-bundle
     - tar

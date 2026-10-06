@@ -1,11 +1,11 @@
-# syntax = ghcr.io/siderolabs/bldr:v0.6.3
+# syntax = ghcr.io/siderolabs/bldr:v0.6.4
 
 format: v1alpha2
 
 vars:
-  TOOLCHAIN_MUSL_IMAGE: ghcr.io/siderolabs/toolchain-musl:v1.14.0-3-g386b969
+  TOOLCHAIN_MUSL_IMAGE: ghcr.io/siderolabs/toolchain-musl:v1.14.0-4-gebafe88
   TOOLS_PREFIX: ghcr.io/siderolabs/
-  TOOLS_REV: v1.14.0-5-g87316ca
+  TOOLS_REV: v1.14.0-8-g9776960
   LLVM_IMAGE: ghcr.io/siderolabs/llvm
   RUSTC_IMAGE: ghcr.io/siderolabs/rustc:v1.14.0
 
@@ -15,10 +15,10 @@ vars:
   cni_sha512: 5811fb14786f1f9d9e40741ce337449ce329e14e04213bc660102eb470150f24026e59caec480572e37d0e3e6e6518737f3cc7ac462c47034d0737283ec532f9
 
   # renovate: datasource=github-tags depName=containerd/containerd
-  containerd_version: v2.3.4
-  containerd_ref: db8809540e1a7a9da5d518876894933ff55692ab
-  containerd_sha256: 175bbf57d637c987fa742f846b43b1b8ba2c61af6a9eaec619c625e4a8a19b69
-  containerd_sha512: cf8be1759399fb9e3b7c84d353a876b8f599b74fb3094a288333cf0b61a743b74484cbde7eab96576b214c92caf7de65ef94813bb3670e079585c371a438f6b4
+  containerd_version: v2.3.6
+  containerd_ref: ee2735368117d2eb259779949d5e75cdafec9761
+  containerd_sha256: b4b407c64e11a22549b14c47857ac0e02e9f47f8cfc28924e9aa04a0adcaa883
+  containerd_sha512: 47e13e5442fbf25f37faca76882aad58a927ff2fc0cdb5cd41b1ab75204a5e02269220709da5b1c0a4dd588d5a8b61132219c83eabd3bd7a4a64e6ff7f22ac72
 
   # renovate: datasource=github-tags depName=kdave/btrfs-progs
   btrfsprogs_version: 6.19.1
@@ -36,9 +36,9 @@ vars:
   dosfstools_sha512: 3cc0808edb4432428df8a67da4bb314fd1f27adc4a05754c1a492091741a7b6875ebd9f6a509cc4c5ad85643fc40395b6e0cadee548b25cc439cc9b725980156
 
   # renovate: datasource=github-tags extractVersion=^drbd-(?<version>.*)$ depName=LINBIT/drbd
-  drbd_version: 9.3.3
-  drbd_sha256: a7bfb016070c31df1c738569ca8cc5e5fc337dd449147f7bf62e746d87d38f21
-  drbd_sha512: 43ec4762b778ded9b45856fe6073c0a85f71a5994074868e53bbd31d231b16b06c0f038a63a8387e6db01bd16463e083c44f86dd48796bf81ef9d83009d6681f
+  drbd_version: 9.3.4
+  drbd_sha256: a2de4b7ffc43fdabad01b0bf7283b910eb6401b0f788e33a65ae94fc0588545c
+  drbd_sha512: 17c06d5d9d8d8563e34cd8796334754fbfc52821a06eba0779b3ce9cc06c458623f639079316c65fe09bc2a953ce8ae5e10be0c7e4dfcc4797427e085bdfdf1c
 
   # renovate: datasource=git-tags depName=git://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git
   e2fsprogs_version: v1.47.4
@@ -73,8 +73,8 @@ vars:
 
   # renovate: datasource=github-releases extractVersion=^v(?<version>.*)$ depName=hailo-ai/hailort-drivers
   hailort_version: 4.24.0
-  hailort_sha256: 6ed54bdb80b97fa2ac7e0dee2102a9b609b2b9a4d12dbae4c190ad769c7bc636
-  hailort_sha512: ce73660a8be5b5cb253f892b70411136e4efa6cb8e5a3a6f019489033034dd52c69cac06b06813287c02af7d7813e2fd7dccb72e93cf816104d0767efcd2aa48
+  hailort_sha256: 13b7d7dd8c70be52c772c00c8205e9e5cf191038826eaef35a6388aca1abed56
+  hailort_sha512: 063e5f2d1c2e4128c2a0abb192a1c7cab8ca5d18fbd38039a48d2d5de307f0af6b1e253f862da7263ecb047e56588ce664e5b72678a4be6cd8786e5801297b97
   hailort_fw_sha256: 3ebeb209987bb0e484353be23774d3893908de84069016c4e37361c871d8433a
   hailort_fw_sha512: 53ffd641086e7bc1298e6b41c7204199e49e595feeb06bcfa339c15e4a73de6133e59293cf3f5dfdd72b052f2c829fc5ad93da5d325ed084b702e450f999594c
 
@@ -106,9 +106,9 @@ vars:
   # The Talos release paired with this kernel; workflow tags derive from it.
   talos_version: v1.14.0
   # renovate: datasource=git-tags extractVersion=^v(?<version>.*)$ depName=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-  linux_version: 6.18.48
-  linux_sha256: 025478b8674936cd3701233b3343c396c427b8adc615c328fb6aa53a84cb48e6
-  linux_sha512: 7bb36081842daf84a1851d0e70e80779066af8d0d66f3d45a9eb91ce295c177f721bfb6a55a074dfc7509dea78a4de91446567a25ab3c841a98675ee1db8b9f9
+  linux_version: 6.18.54
+  linux_sha256: 9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac
+  linux_sha512: 37b4d8f6334345b769d2eccfb9a93e9d401b89ec582215d6a7035c94045ffc926fd332760d29e126285869c0b36c7d7c65a75c380d06ceb46bc15913a36009e3
 
   # renovate: datasource=git-tags extractVersion=^libaio-(?<version>.*)$ depName=https://pagure.io/libaio.git
   libaio_version: 0.3.113
@@ -177,9 +177,9 @@ vars:
 
   # NOTE: keep in sync with the libpathrs version required by runc: https://github.com/opencontainers/runc/blob/release-1.5/script/build-libpathrs.sh
   # renovate: datasource=github-releases depName=cyphar/libpathrs
-  libpathrs_version: v0.2.5
-  libpathrs_sha256: f8f4a9419eb839cd5decbd120b65f0495bf6eac07155477fe39a8c2a23da589d
-  libpathrs_sha512: 009a6aa91d4ef5ccae011f39def4cf7ffc626fd7def9e9cbcf7c827d813215811719c44674e68192d3f4770c7968f2e7de7c13b27c7e53807f0aa0f4ba5c428f
+  libpathrs_version: v0.2.6
+  libpathrs_sha256: 7b1e3a2c3cc0bd9f94187edbb6d1ba9737deb2bf7f724df1ee37653ea405b2b0
+  libpathrs_sha512: e48a3e2ed8c8403c95621f1f98ae7e95cd86f733894c73478742772852eca2aa52ff99af27e43c2997f3c658cf4f5cb4f86c46c6ec7dcb3b3ddfc3a60797dd17
 
   # renovate: datasource=github-releases extractVersion=^popt-(?<version>.*)-release$ depName=rpm-software-management/popt
   libpopt_version: 1.19
@@ -203,9 +203,9 @@ vars:
   liburcu_sha512: 53c28821dabfc1e8803c4299f6a9e589c9949d0062dd8aaa4aabb6d77641dfbd2b2c035c50680991d9f228499c12b9b23469044726a6ffce5e84f21f17cabff3
 
   # renovate: datasource=git-tags depName=git://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git
-  linux_firmware_version: 20260810
-  linux_firmware_sha256: b78dd0475df5aabafe1e515dc988b17de8c5f5afce16573453275f5f855a2cb2
-  linux_firmware_sha512: e287507d8b89d2f936e9313128ca35e86c101ff907e6b2255403d00e1f4bc0c48b45493a608fd61f160baea17d808c09d3c3d4cdacccf3a02826b8834c81989f
+  linux_firmware_version: 20260916
+  linux_firmware_sha256: 5f129e0d520b9e4e7e019130ba1cd18ab0ff59e9664ea1230532ce174e940ca1
+  linux_firmware_sha512: e459f57702301cb9b97bbb7e7d2cdd20687618d0a9cfed12ffebe2055edac8bb097f0a58cc20438647ff99fce64e1f54e22fa4b7e1597f58e42fb055107a9032
 
   # renovate: datasource=git-tags extractVersion=^v(?<version>.*)$ depName=git://sourceware.org/git/lvm2.git
   lvm2_version: 2_03_42
@@ -267,15 +267,30 @@ vars:
   qemu_sha512: 17009c49b1a4f35b150f98c7c3955cb44bf9c63593f124276b328da97568f600724b8f26759fbac88e96e814bda389491713e34b3aae53fa515277f5a868ea5a
 
   # renovate: datasource=github-tags depName=opencontainers/runc
-  runc_version: v1.5.1
-  runc_ref: 8f2685a471d3347a686ad3909783d8aafc6bb208
-  runc_sha256: db743b39fd7de8da88adce5a61a54529a494928cd59227fffb622f5cb4ba6ef9
-  runc_sha512: bffbbd64d7990e591d980de370795b48cf4c27f7b50a8227065f8ff83d82fc22652ac848f231f1cc0f7cbab2082cb74cd2fc7196bcddcd145fd4326582dcc296
+  runc_version: v1.5.2
+  runc_ref: 29dd3dc2b13b4123162e5fe132504bb4b15569f1
+  runc_sha256: 46eba094e45fc37d96a1b1dc150971fe8d076d6e23bae09dd35443141bed31a1
+  runc_sha512: b7323cd1b2bdc0d12f172c4ce2957d31845a4c97390e0ec0d3333bb766ef117f25c47cd4546ab22b0287a8e6da816100638636379bdd044634599a6918a9cb77
 
   # renovate: datasource=git-tags extractVersion=^tag-(?<version>.*)$ depName=git://repo.or.cz/socat.git
   socat_version: 1.8.1.3
   socat_sha256: 06602ffd591e98c75b3dc1d66f0f19136cc666b0b2d95caad987d6ab2cb28097
   socat_sha512: cd5f88a347fc7ea9431e235d7151d2007cd37143132eea625f7520b68e703e4c95f99fe6959869b3f0300633f039f666850cf3b0e26d43affd540967a119a3f3
+
+  # renovate: datasource=git-tags depName=https://gitlab.gnome.org/GNOME/json-glib.git
+  json_glib_version: 1.10.8
+  json_glib_sha256: 55c5c141a564245b8f8fbe7698663c87a45a7333c2a2c56f06f811ab73b212dd
+  json_glib_sha512: f4ba8660b586a4e738803e4dbfdfcd34fa7ceba9189e7bf3f2b50e21f4d4886f99535ceb3453c89b1d1ae8d96bf4168a135b73b7e1a2dbc46b19e9b710ad56a1
+
+  # renovate: datasource=github-releases depName=stefanberger/libtpms
+  libtpms_version: v0.10.2
+  libtpms_sha256: edac03680f8a4a1c5c1d609a10e3f41e1a129e38ff5158f0c8deaedc719fb127
+  libtpms_sha512: e30297289a03d4fefb2cdf44654d6f77719a021deb9b721f08d4a23e20706b903ef5e979ba05ad333d052cf35681ba5e143fb883bed0dc37626eca2807d0c01f
+
+  # renovate: datasource=github-releases depName=stefanberger/swtpm
+  swtpm_version: v0.10.2
+  swtpm_sha256: f61cf6f1e9bbcb4cefb30b70cafaf1c4df54c6961e65cfa63830e8ad0e220134
+  swtpm_sha512: 412034286eab4245127cf063ec637e3ca8cabcd8b58692d55b4eab49f4e9519da3107c104b771d2a097a09ffacd78aa825d0882558eff3128d7f4d2af7871574
 
   # renovate: datasource=git-refs versioning=git depName=https://github.com/awslabs/tc-redirect-tap.git
   tc_redirect_tap_ref: 34bf829e9a5c99df47318c7feeb637576df239fc
