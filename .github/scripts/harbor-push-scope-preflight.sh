@@ -285,9 +285,14 @@ echo "granted actions for $REPOSITORY: ${ACTIONS:-<none>}"
 # gets pasted into the ask. Two hand-maintained copies of the same sentence is
 # how those stop matching.
 ASK_CREDENTIAL="HARBOR_USERNAME/HARBOR_PASSWORD in Blockcast/pkgs"
+# The project is the repository's first component (valid_repository already
+# requires project/repo), so the ask names the project actually probed. A
+# hardcoded 'library' sends a dispatch for apps/widget to a project nobody asked
+# about.
+PROJECT=${REPOSITORY%%/*}
 case "$DECISION" in
-  no-push)  ASK_NEEDS="push on Harbor project 'library' (repository $REPOSITORY)" ;;
-  no-grant) ASK_NEEDS="visibility + push on Harbor project 'library'" ;;
+  no-push)  ASK_NEEDS="push on Harbor project '$PROJECT' (repository $REPOSITORY)" ;;
+  no-grant) ASK_NEEDS="visibility + push on Harbor project '$PROJECT' (repository $REPOSITORY)" ;;
   *)        ASK_NEEDS="" ;;
 esac
 

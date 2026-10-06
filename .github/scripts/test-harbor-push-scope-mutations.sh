@@ -342,4 +342,16 @@ open(path, "w").write(s.replace(old, 'scope=repository:library/talos-installer:'
 PY
 assert_caught "token scope ignores --repository (the verdict describes the default repository)"
 
+# 21. The ask's project (Ally, BLO-39281): hardcode 'library', so probing
+#     apps/widget files a credential ask for a project nobody asked about.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = 'PROJECT=${REPOSITORY%%/*}'
+assert old in s, "ask project derivation not found -- update this mutation"
+open(path, "w").write(s.replace(old, 'PROJECT=library', 1))
+PY
+assert_caught "ask names project 'library' regardless of --repository (the ask goes to the wrong project)"
+
 echo "all mutations caught"

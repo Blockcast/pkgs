@@ -277,14 +277,24 @@ STUB_CURL_BODY=$(token_json "$REPO" "pull"); run_preflight
 check "no-push arm exits 1"             "1"   "$RC"
 check "no-push arm says NOT push"       "yes" "$(has 'but NOT push' "$OUT")"
 check "no-push arm reaches the summary" "yes" "$(has 'verdict: **no-push**' "$SUMMARY")"
-check "no-push summary carries the ask" "yes" "$(has 'needs: `push on Harbor project' "$SUMMARY")"
+check "no-push summary carries the ask" "yes" \
+  "$(has "needs: \`push on Harbor project 'library' (repository $REPO)\`" "$SUMMARY")"
 
 STUB_CURL_BODY=$(token_json "other/thing" "pull,push"); run_preflight
 check "no-grant arm exits 1"             "1"   "$RC"
 check "no-grant arm says not mentioned"  "yes" "$(has 'does not mention' "$OUT")"
 check "no-grant arm reaches the summary" "yes" "$(has 'verdict: **no-grant**' "$SUMMARY")"
 check "no-grant summary asks for visibility" "yes" \
-  "$(has 'needs: `visibility + push' "$SUMMARY")"
+  "$(has "needs: \`visibility + push on Harbor project 'library' (repository $REPO)\`" "$SUMMARY")"
+
+# The ask names the probed project, not the default's (Ally, BLO-39281). On the
+# defaults a hardcoded 'library' is indistinguishable from the derived one.
+STUB_CURL_BODY=$(token_json "apps/widget" "pull"); run_preflight --repository apps/widget
+check "no-push ask names the probed project" "yes" \
+  "$(has "needs: \`push on Harbor project 'apps' (repository apps/widget)\`" "$SUMMARY")"
+STUB_CURL_BODY=$(token_json "other/thing" "pull,push"); run_preflight --repository apps/widget
+check "no-grant ask names the probed project and repository" "yes" \
+  "$(has "needs: \`visibility + push on Harbor project 'apps' (repository apps/widget)\`" "$SUMMARY")"
 
 # -- the response-shape guard (Ally, BLO-39281). A 200 carrying no token --
 # Harbor answering a realm it does not recognise, or a proxy interposing -- must
