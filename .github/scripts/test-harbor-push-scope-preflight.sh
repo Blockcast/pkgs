@@ -227,9 +227,16 @@ check "ok arm files no credential ask"  "no"  "$(has 'Named credential ask' "$SU
 # routes a credential ask for a grant that already exists; asking about another
 # repository answers a question nobody posed; dropping the curlrc probes
 # anonymously, which reports no-push for every principal.
-check "asks Harbor for push, not just pull" "yes" \
-  "$(has "scope=repository:$REPO:push,pull" "$ARGV")"
-check "asks about OUR repository"           "yes" "$(has "repository:$REPO:" "$ARGV")"
+# The whole token URL is pinned in one assertion rather than one component at a
+# time: host, realm service, repository and push scope, so a part nobody named
+# (the realm, the host the script dials) cannot drift unasserted.
+check "asks exactly one URL, fully pinned"  "yes" \
+  "$(has "https://harbor.blockcast.net/service/token?service=harbor-registry&scope=repository:$REPO:push,pull" "$ARGV")"
+# -f is what turns an HTTP 4xx into curl exit 22, the only way into
+# curl_failure_kind's credential arm. Without it a rejected credential is
+# reported as "answered the token request without a token".
+check "fails on an HTTP error (curl -f)"    "yes" \
+  "$(grep -qxE -- '-[[:alpha:]]*f[[:alpha:]]*|--fail' <<<"$ARGV" && echo yes || echo no)"
 check "sends the credential curlrc"         "yes" "$(has '--config' "$ARGV")"
 # ...and that curlrc carries the credential. Attached-but-blank (`user = ":"`)
 # probes anonymously, the same no-push-for-everyone false FAIL as no curlrc.
