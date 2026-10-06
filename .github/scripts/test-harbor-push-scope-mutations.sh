@@ -125,10 +125,11 @@ python3 - "$script" <<'PY'
 import sys
 path = sys.argv[1]
 s = open(path).read()
-old = '''  case "$1" in
-    5|6|7|28|35|56|60|77) echo network ;;
-    *)                    echo credential ;;
-  esac'''
+old = '''  if [[ "$rc" == 67 ]] || [[ "$rc" == 22 && ( "$http" == 401 || "$http" == 403 ) ]]; then
+    echo credential
+  else
+    echo network
+  fi'''
 assert old in s, "curl failure classification not found -- update this mutation"
 open(path, "w").write(s.replace(old, "  echo credential", 1))
 PY
@@ -162,9 +163,9 @@ python3 - "$script" <<'PY'
 import sys
 path = sys.argv[1]
 s = open(path).read()
-old = '  if [[ "$(curl_failure_kind "$rc")" == network ]]; then'
+old = '  if [[ "$(curl_failure_kind "$rc" "$http_code")" == network ]]; then'
 assert old in s, "curl_failure_kind call site not found -- update this mutation"
-new = '  if [[ "$(curl_failure_kind "$rc")" == credential ]]; then'
+new = '  if [[ "$(curl_failure_kind "$rc" "$http_code")" == credential ]]; then'
 open(path, "w").write(s.replace(old, new, 1))
 PY
 assert_caught "curl_failure_kind call site inverted (network takes the credential arm)"
@@ -191,18 +192,18 @@ assert_caught "summary moved after the case (unreachable on both FAIL arms)"
 # and "simplify this case list" is a much likelier future edit than "delete
 # this function".
 
-# 10. The TLS-trust codes -- narrow the network arm back to DNS/connect/timeout
-#     so an expired Harbor certificate reports as "rejected the credential" and
-#     files a CTO ask over a cert renewal.
+# 10. The HTTP status condition -- take any exit 22 as a rejection, so a Harbor
+#     503 mid-restart (which `-f` also reports as 22) reads as "rejected the
+#     credential" and files a CTO ask over a restart.
 python3 - "$script" <<'PY'
 import sys
 path = sys.argv[1]
 s = open(path).read()
-old = r'    5|6|7|28|35|56|60|77) echo network ;;'
-assert old in s, "network arm not found -- update this mutation"
-open(path, "w").write(s.replace(old, r'    6|7|28|35) echo network ;;', 1))
+old = '[[ "$rc" == 22 && ( "$http" == 401 || "$http" == 403 ) ]]'
+assert old in s, "HTTP status condition not found -- update this mutation"
+open(path, "w").write(s.replace(old, '[[ "$rc" == 22 ]]', 1))
 PY
-assert_caught "TLS-trust codes dropped from the network arm (a lapsed cert reads as a credential fault)"
+assert_caught "HTTP status dropped from the credential arm (a Harbor 503 reads as a credential fault)"
 
 # 11. The CR/LF escaping -- leave \\ and \" escaped but let a real newline
 #     through, so a password containing one closes the user directive and makes
@@ -283,7 +284,7 @@ assert_caught "curlrc attached but blank (an anonymous probe reads as no-push fo
 
 # 17. The fail-on-HTTP-error flag (Ally, BLO-39281). Not a false-FAIL like
 #     13-16: dropping -f disables a DIAGNOSIS branch. A 4xx stops being a curl
-#     error, so exit 22 never occurs, curl_failure_kind's credential arm (:136)
+#     error, so exit 22 never occurs, curl_failure_kind's credential arm (:147)
 #     becomes unreachable, and a genuinely rejected credential is misreported as
 #     "answered the token request without a token" -- fail-closed, but it sends
 #     the reader after the wrong fault.
@@ -296,5 +297,49 @@ assert old in s, "curl fail flag not found -- update this mutation"
 open(path, "w").write(s.replace(old, 'curl -sS --max-time 30', 1))
 PY
 assert_caught "curl -f dropped (a rejected credential is misreported as a tokenless answer)"
+
+# 18. The pre-fix classifier shape (Ally, BLO-39281): enumerate the network
+#     codes and default to credential. Every code it does not list -- 52 empty
+#     reply, 55 send error -- then routes a transport failure to a CTO ask.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '''  if [[ "$rc" == 67 ]] || [[ "$rc" == 22 && ( "$http" == 401 || "$http" == 403 ) ]]; then
+    echo credential
+  else
+    echo network
+  fi'''
+assert old in s, "curl failure classification not found -- update this mutation"
+new = '''  case "$1" in
+    5|6|7|28|35|56|60|77) echo network ;;
+    *)                    echo credential ;;
+  esac'''
+open(path, "w").write(s.replace(old, new, 1))
+PY
+assert_caught "classifier defaults to credential (an unlisted transport failure files a CTO ask)"
+
+# 19-20. The token URL's interpolation (Ally, BLO-39281). Hardcoding either one
+#    to its default value survived the default-input URL pin; only a run with
+#    non-default --host / --repository can see it.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '"https://$HOST/service/token?'
+assert old in s, "token URL host not found -- update this mutation"
+open(path, "w").write(s.replace(old, '"https://harbor.blockcast.net/service/token?', 1))
+PY
+assert_caught "token URL ignores --host (the probe answers for a host nobody named)"
+
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = 'scope=repository:$REPOSITORY:'
+assert old in s, "token scope repository not found -- update this mutation"
+open(path, "w").write(s.replace(old, 'scope=repository:library/talos-installer:', 1))
+PY
+assert_caught "token scope ignores --repository (the verdict describes the default repository)"
 
 echo "all mutations caught"

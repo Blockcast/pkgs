@@ -108,16 +108,25 @@ check "dots are literal, not any-char" "no" "$(ok_host 'harborxblockcastxnet')"
 check "empty"                         "no"  "$(ok_host '')"
 
 # ------------------------------------------------------------------ guard 6
-# curl failure classification. `curl -f` exits non-zero for an HTTP 4xx AND for
-# never having reached the server, and calling the second "rejected the
-# credential" routes a network blip to a credential ask.
+# curl failure classification. Only Harbor saying 401/403 (or curl's 67, login
+# denied) is a credential verdict; everything else must default to network.
+# The old shape enumerated the network codes and defaulted to credential, so
+# every code nobody had listed routed a transport blip to a credential ask.
 
 check "DNS failure is network"        "network"    "$(curl_failure_kind 6)"
 check "connection refused is network" "network"    "$(curl_failure_kind 7)"
 check "timeout is network"            "network"    "$(curl_failure_kind 28)"
 check "TLS handshake is network"      "network"    "$(curl_failure_kind 35)"
-check "HTTP 4xx is credential"        "credential" "$(curl_failure_kind 22)"
-check "an unknown status is credential" "credential" "$(curl_failure_kind 99)"
+check "HTTP 401 is credential"        "credential" "$(curl_failure_kind 22 401)"
+check "HTTP 403 is credential"        "credential" "$(curl_failure_kind 22 403)"
+check "login denied is credential"    "credential" "$(curl_failure_kind 67)"
+check "an unlisted exit code is network" "network" "$(curl_failure_kind 99)"
+check "empty reply is network"        "network"    "$(curl_failure_kind 52)"
+check "send error is network"         "network"    "$(curl_failure_kind 55)"
+
+# `-f` folds every HTTP >= 400 into exit 22. A Harbor 503 during a restart is
+# 22 too, and says nothing whatever about the credential.
+check "HTTP 503 behind -f is network" "network"    "$(curl_failure_kind 22 503)"
 
 # TLS trust. An expired or untrusted Harbor certificate is routine and means
 # the handshake never completed, so nothing is established about the
@@ -167,18 +176,31 @@ stub=$(mktemp -d)
 trap 'rm -rf "$stub"' EXIT
 cat > "$stub/curl" <<'STUB'
 #!/usr/bin/env bash
-# Test stub. Never makes a request: exits STUB_CURL_EXIT when set, else prints
-# STUB_CURL_BODY. Records its argv to STUB_CURL_ARGV, one argument per line, so
-# the OUTBOUND half of the call site -- the scope asked for, and whether the
-# credential curlrc is attached at all -- can be asserted too. Copies the file
-# passed to --config into STUB_CURL_CRED, so what that curlrc CARRIES is
-# assertable as well, not only that one was attached.
+# Test stub. Never makes a request: exits STUB_CURL_EXIT when set, else writes
+# STUB_CURL_BODY (to the --output file when one is given). Answers
+# --write-out '%{http_code}' with STUB_CURL_HTTP, defaulting to 200, or to 000
+# on failure as real curl does when no response arrived. Records its argv to
+# STUB_CURL_ARGV, one argument per line, so the OUTBOUND half of the call site
+# -- the scope asked for, and whether the credential curlrc is attached at all
+# -- can be asserted too. Copies the file passed to --config into
+# STUB_CURL_CRED, so what that curlrc CARRIES is assertable as well, not only
+# that one was attached.
 [[ -n "${STUB_CURL_ARGV:-}" ]] && printf '%s\n' "$@" > "$STUB_CURL_ARGV"
-if [[ -n "${STUB_CURL_CRED:-}" ]]; then
-  prev=""; for a in "$@"; do [[ "$prev" == --config ]] && cp "$a" "$STUB_CURL_CRED"; prev="$a"; done
+out=/dev/stdout; wout=""; prev=""
+for a in "$@"; do
+  [[ "$prev" == --config && -n "${STUB_CURL_CRED:-}" ]] && cp "$a" "$STUB_CURL_CRED"
+  [[ "$prev" == --output ]] && out=$a
+  [[ "$prev" == --write-out ]] && wout=$a
+  prev="$a"
+done
+if [[ -n "${STUB_CURL_EXIT:-}" ]]; then
+  code=${STUB_CURL_HTTP:-000}
+else
+  code=${STUB_CURL_HTTP:-200}
+  printf '%s' "${STUB_CURL_BODY:-}" > "$out"
 fi
-[[ -n "${STUB_CURL_EXIT:-}" ]] && exit "$STUB_CURL_EXIT"
-printf '%s' "${STUB_CURL_BODY:-}"
+printf '%s' "${wout//'%{http_code}'/$code}"
+exit "${STUB_CURL_EXIT:-0}"
 STUB
 chmod +x "$stub/curl"
 
@@ -195,14 +217,15 @@ print(json.dumps({"token": "header.%s.signature" % payload}))
 PY
 }
 
-# Runs the script against the stub. Sets RC / OUT / SUMMARY / ARGV / CRED.
+# Runs the script against the stub, forwarding any arguments. Sets RC / OUT /
+# SUMMARY / ARGV / CRED.
 run_preflight() {
   local summary_file argv_file cred_file
   summary_file=$(mktemp); argv_file=$(mktemp); cred_file=$(mktemp)
   RC=0
   OUT=$(PATH="$stub:$PATH" HARBOR_USERNAME=u HARBOR_PASSWORD=p \
         GITHUB_STEP_SUMMARY="$summary_file" STUB_CURL_ARGV="$argv_file" \
-        STUB_CURL_CRED="$cred_file" bash "$script" 2>&1) || RC=$?
+        STUB_CURL_CRED="$cred_file" bash "$script" "$@" 2>&1) || RC=$?
   SUMMARY=$(cat "$summary_file")
   ARGV=$(cat "$argv_file")
   CRED=$(cat "$cred_file")
@@ -232,15 +255,23 @@ check "ok arm files no credential ask"  "no"  "$(has 'Named credential ask' "$SU
 # (the realm, the host the script dials) cannot drift unasserted.
 check "asks exactly one URL, fully pinned"  "yes" \
   "$(has "https://harbor.blockcast.net/service/token?service=harbor-registry&scope=repository:$REPO:push,pull" "$ARGV")"
-# -f is what turns an HTTP 4xx into curl exit 22, the only way into
-# curl_failure_kind's credential arm. Without it a rejected credential is
-# reported as "answered the token request without a token".
+# -f is what turns an HTTP 401/403 into curl exit 22, the only way an HTTP
+# rejection reaches curl_failure_kind's credential arm. Without it a rejected
+# credential is reported as "answered the token request without a token".
 check "fails on an HTTP error (curl -f)"    "yes" \
   "$(grep -qxE -- '-[[:alpha:]]*f[[:alpha:]]*|--fail' <<<"$ARGV" && echo yes || echo no)"
 check "sends the credential curlrc"         "yes" "$(has '--config' "$ARGV")"
 # ...and that curlrc carries the credential. Attached-but-blank (`user = ":"`)
 # probes anonymously, the same no-push-for-everyone false FAIL as no curlrc.
 check "the curlrc actually carries it"      "yes" "$(has 'user = "u:p"' "$CRED")"
+
+# The pin above runs on the defaults, so it cannot tell `https://$HOST/` from a
+# hardcoded `https://harbor.blockcast.net/`, nor `$REPOSITORY` from a hardcoded
+# library/talos-installer. Both of those survived it (Ally, BLO-39281). A run
+# with non-default inputs is the only thing that separates them.
+run_preflight --host registry.blockcast.net --repository library/other
+check "the URL follows --host and --repository" "yes" \
+  "$(has "https://registry.blockcast.net/service/token?service=harbor-registry&scope=repository:library/other:push,pull" "$ARGV")"
 
 STUB_CURL_BODY=$(token_json "$REPO" "pull"); run_preflight
 check "no-push arm exits 1"             "1"   "$RC"
@@ -269,7 +300,7 @@ check "a tokenless 200 reports no verdict" "no"  "$(has 'verdict: **' "$SUMMARY"
 # these pin is that the right branch is wired to the right FATAL text. A
 # network blip must never print the credential ask.
 
-STUB_CURL_BODY=""; export STUB_CURL_EXIT
+STUB_CURL_BODY=""; export STUB_CURL_EXIT STUB_CURL_HTTP
 
 STUB_CURL_EXIT=6; run_preflight
 check "DNS failure exits 1"               "1"   "$RC"
@@ -280,12 +311,17 @@ check "DNS failure routes no credential ask" "no" \
 STUB_CURL_EXIT=60; run_preflight
 check "untrusted cert names a NETWORK fault" "yes" "$(has 'This is a NETWORK failure' "$OUT")"
 
-STUB_CURL_EXIT=22; run_preflight
-check "HTTP 4xx exits 1"                  "1"   "$RC"
-check "HTTP 4xx names an AUTH failure"    "yes" \
+STUB_CURL_EXIT=22; STUB_CURL_HTTP=401; run_preflight
+check "HTTP 401 exits 1"                  "1"   "$RC"
+check "HTTP 401 names an AUTH failure"    "yes" \
   "$(has 'This is an AUTHENTICATION failure' "$OUT")"
 
-unset STUB_CURL_EXIT
+# The same exit 22 from a Harbor that is restarting. Pins that the status
+# actually reaches the classifier: without it this reads as a rejection.
+STUB_CURL_EXIT=22; STUB_CURL_HTTP=503; run_preflight
+check "HTTP 503 names a NETWORK fault"    "yes" "$(has 'This is a NETWORK failure' "$OUT")"
+
+unset STUB_CURL_EXIT STUB_CURL_HTTP
 
 # -- argument validation, at the call site rather than the function.
 

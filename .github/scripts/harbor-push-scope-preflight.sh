@@ -118,26 +118,36 @@ valid_host() {
   [[ "$host" =~ ^(harbor|registry)\.blockcast\.net$ ]]
 }
 
-# Did curl fail before Harbor ever answered?
+# Did Harbor actually rule on the credential?
 #
-# `curl -f` exits non-zero both for an HTTP 4xx (22) and for never having
-# reached the server at all. Reporting the second as "rejected the credential"
-# routes a network problem to a credential ask -- the one answer this script
-# otherwise refuses to guess.
+# Reporting anything else as "rejected the credential" routes a transport
+# problem to a credential ask -- the one answer this script otherwise refuses
+# to guess. So the CLOSED side is the one enumerated: curl exit 67 (login
+# denied), or exit 22 carrying an HTTP 401 or 403. Every other failure defaults
+# to network. The reverse -- listing the network codes and defaulting to
+# credential -- sent a CTO ask for every exit code nobody had thought to list
+# (52 empty reply, 55 send error, ...).
 #
-# The TLS-trust codes (60 untrusted peer certificate, 77 unreadable CA bundle)
-# belong on this side with DNS and connect: an expired Harbor certificate is an
-# ordinary, recurring operational event, and the handshake failing means the
-# request never reached Harbor, so nothing whatever is established about the
+# The status is needed as well as the exit code because `curl -f` collapses
+# every HTTP >= 400 into 22: a Harbor 503 mid-restart, or a 502 from a proxy,
+# is 22 too and says nothing about the credential. The caller passes curl's
+# --write-out '%{http_code}' for this.
+#
+# TLS trust (60 untrusted peer certificate, 77 unreadable CA bundle) falls on
+# the network side, and must: an expired Harbor certificate is an ordinary,
+# recurring operational event, and the handshake failing means the request
+# never reached Harbor, so nothing whatever is established about the
 # credential. Classifying those as "credential" would send a CTO ask every time
 # a cert lapsed, which is the exact mis-routing this function exists to prevent.
 #
 # echoes exactly one of: network | credential
 curl_failure_kind() {
-  case "$1" in
-    5|6|7|28|35|56|60|77) echo network ;;
-    *)                    echo credential ;;
-  esac
+  local rc=$1 http=${2:-}
+  if [[ "$rc" == 67 ]] || [[ "$rc" == 22 && ( "$http" == 401 || "$http" == 403 ) ]]; then
+    echo credential
+  else
+    echo network
+  fi
 }
 
 # Escape a value for a double-quoted curl config entry.
@@ -212,22 +222,27 @@ printf 'user = "%s:%s"\n' \
 
 echo "probing push scope: $HOST/$REPOSITORY"
 
-response=$(curl -fsS --max-time 30 --config "$cfg/curlrc" \
+# The body goes to a file so stdout carries only the HTTP status, which is what
+# lets curl_failure_kind tell a 401 from a 503 -- `-f` reports both as exit 22.
+http_code=$(curl -fsS --max-time 30 --config "$cfg/curlrc" \
+  --output "$cfg/response" --write-out '%{http_code}' \
   "https://$HOST/service/token?service=harbor-registry&scope=repository:$REPOSITORY:push,pull") || {
   rc=$?
-  if [[ "$(curl_failure_kind "$rc")" == network ]]; then
-    echo "FATAL: could not reach the Harbor token endpoint at $HOST (curl exit $rc)." >&2
-    echo "This is a NETWORK failure -- DNS, connection or timeout. The request" >&2
-    echo "never reached Harbor, so NOTHING is established about the credential" >&2
-    echo "or its scope. Retry. Do not route a credential ask on this." >&2
+  if [[ "$(curl_failure_kind "$rc" "$http_code")" == network ]]; then
+    echo "FATAL: no credential verdict from the Harbor token endpoint at $HOST (curl exit $rc, HTTP $http_code)." >&2
+    echo "This is a NETWORK failure -- DNS, connection, timeout, TLS, or an HTTP" >&2
+    echo "error other than 401/403. Harbor never ruled on the credential, so" >&2
+    echo "NOTHING is established about it or its scope. Retry. Do not route a" >&2
+    echo "credential ask on this." >&2
   else
-    echo "FATAL: the Harbor token endpoint at $HOST rejected the credential (curl exit $rc)." >&2
+    echo "FATAL: the Harbor token endpoint at $HOST rejected the credential (curl exit $rc, HTTP $http_code)." >&2
     echo "This is an AUTHENTICATION failure, not a scope one: the request never" >&2
     echo "got far enough to be downgraded. Check HARBOR_USERNAME/HARBOR_PASSWORD" >&2
     echo "in Blockcast/pkgs. Route a named credential ask; do not widen a grant here." >&2
   fi
   exit 1
 }
+response=$(cat "$cfg/response")
 
 token=$(printf '%s' "$response" | python3 -c '
 import json, sys
