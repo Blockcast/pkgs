@@ -255,6 +255,16 @@ check "no-grant arm reaches the summary" "yes" "$(has 'verdict: **no-grant**' "$
 check "no-grant summary asks for visibility" "yes" \
   "$(has 'needs: `visibility + push' "$SUMMARY")"
 
+# -- the response-shape guard (Ally, BLO-39281). A 200 carrying no token --
+# Harbor answering a realm it does not recognise, or a proxy interposing -- must
+# stop here rather than decode an empty string into a verdict. This arm carried
+# 0 assertions, so nothing would have noticed it reporting a scope.
+STUB_CURL_BODY='{}'; run_preflight
+check "a tokenless 200 exits 1"            "1"   "$RC"
+check "a tokenless 200 names the shape"    "yes" \
+  "$(has 'answered the token request without a token' "$OUT")"
+check "a tokenless 200 reports no verdict" "no"  "$(has 'verdict: **' "$SUMMARY")"
+
 # -- the curl_failure_kind CALL SITE. The function is asserted in guard 6; what
 # these pin is that the right branch is wired to the right FATAL text. A
 # network blip must never print the credential ask.

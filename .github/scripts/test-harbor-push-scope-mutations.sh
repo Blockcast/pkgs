@@ -281,4 +281,20 @@ open(path, "w").write(s.replace(old, '"" ""', 1))
 PY
 assert_caught "curlrc attached but blank (an anonymous probe reads as no-push for everyone)"
 
+# 17. The fail-on-HTTP-error flag (Ally, BLO-39281). Not a false-FAIL like
+#     13-16: dropping -f disables a DIAGNOSIS branch. A 4xx stops being a curl
+#     error, so exit 22 never occurs, curl_failure_kind's credential arm (:136)
+#     becomes unreachable, and a genuinely rejected credential is misreported as
+#     "answered the token request without a token" -- fail-closed, but it sends
+#     the reader after the wrong fault.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = 'curl -fsS --max-time 30'
+assert old in s, "curl fail flag not found -- update this mutation"
+open(path, "w").write(s.replace(old, 'curl -sS --max-time 30', 1))
+PY
+assert_caught "curl -f dropped (a rejected credential is misreported as a tokenless answer)"
+
 echo "all mutations caught"
