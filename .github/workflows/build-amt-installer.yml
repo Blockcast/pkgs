@@ -31,7 +31,15 @@ concurrency:
 
 jobs:
   installer:
-    runs-on: chromium-build
+    # RUNNER: arc-dind, not the retired chromium-build pool. arc-chromium-build
+    # was deleted by onprem-k8s#4510 (merged 2026-10-03), after linux-amt#254
+    # moved that repo's kernel builds here. Blockcast/pkgs was not in #4457's
+    # consumer inventory, so these three workflows kept pointing at a label with
+    # zero registered runners and queued forever (BLO-40510). arc-dind gives a
+    # local privileged dockerd on the same DOCKER_HOST, which is all the "Resolve
+    # dind socket" step below needs, and this repo already reaches it:
+    # harbor-registry-photon.yaml runs there, group `default`.
+    runs-on: arc-dind
     timeout-minutes: 180
     permissions:
       contents: read
