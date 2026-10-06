@@ -19,6 +19,14 @@ on:
         description: 'Custom kernel image ref from build-ct6-mroute-kernel'
         required: true
         type: string
+      module_allowlist_ref:
+        description: >-
+          siderolabs/talos ref whose hack/modules-amd64.txt pairs with pkgs_sha
+          (e.g. v1.14.2 for PKGS v1.14.0-37-g6c312e4). Unioned into the checked-out
+          allowlist. Required, no default: a stale default silently drops the
+          modules a newer kernel needs (BLO-40510).
+        required: true
+        type: string
       installer_tag:
         description: 'Installer image tag to publish; empty derives <talos_version>-amt'
         required: false
@@ -31,7 +39,15 @@ concurrency:
 
 jobs:
   installer:
-    runs-on: chromium-build
+    # RUNNER: arc-dind, not the retired chromium-build pool. arc-chromium-build
+    # was deleted by onprem-k8s#4510 (merged 2026-10-03), after linux-amt#254
+    # moved that repo's kernel builds here. Blockcast/pkgs was not in #4457's
+    # consumer inventory, so these three workflows kept pointing at a label with
+    # zero registered runners and queued forever (BLO-40510). arc-dind gives a
+    # local privileged dockerd on the same DOCKER_HOST, which is all the "Resolve
+    # dind socket" step below needs, and this repo already reaches it:
+    # harbor-registry-photon.yaml runs there, group `default`.
+    runs-on: arc-dind
     timeout-minutes: 180
     permissions:
       contents: read
@@ -91,6 +107,55 @@ jobs:
           repository: siderolabs/talos
           ref: ${{ steps.p.outputs.talos }}
           fetch-depth: 0
+
+      - name: Union the module allowlist with the talos release that pairs with pkgs_sha
+        env:
+          ALLOWLIST_REF: ${{ inputs.module_allowlist_ref }}
+        run: |
+          set -euo pipefail
+          # WHY (BLO-40510): the rootfs module set comes from the TALOS tree
+          # (hack/modules-amd64.txt, consumed by the `depmod-amd64` stage), but
+          # the kernel comes from the PKGS tree. Those two halves move
+          # independently and upstream lands them in lockstep -- so pinning
+          # talos to the production release while overriding the kernel with a
+          # newer pkgs build silently splits a matched pair.
+          #
+          # Measured: pkgs#23 vendors upstream through 6c312e4, which is exactly
+          # the pkgs pin of talos v1.14.2 (`PKGS ?= v1.14.0-37-g6c312e4`). Four
+          # upstream commits in that range enable four new modules, and talos
+          # v1.14.2 allowlists exactly those four. We took only the pkgs half,
+          # so `atlantic.ko` -- which IS allowlisted -- gained a MACsec offload
+          # path referencing `macsec_pn_wrapped` from a `macsec.ko` that never
+          # reached the rootfs. `depmod --errsyms` is fatal here, so the imager
+          # build died in 4m (run 37423482220):
+          #   depmod: WARNING: .../atlantic.ko needs unknown symbol macsec_pn_wrapped
+          #
+          # UNION, never overwrite. An overwrite would let a later paired
+          # release REMOVE an entry and silently strip a NIC or disk driver
+          # from the rootfs -- that bricks a node at boot, and the canary this
+          # feeds runs against production hardware. Union can only add.
+          REF="${ALLOWLIST_REF:?module_allowlist_ref is required}"
+          case "$REF" in v[0-9]*.[0-9]*.[0-9]*|release-[0-9]*.[0-9]*) : ;; *)
+            echo "bad module_allowlist_ref: $REF" >&2; exit 1 ;;
+          esac
+
+          # amd64 only: PLATFORM is pinned to linux/amd64 below, so arm64's list
+          # is never consumed and syncing it would be an unverified change.
+          PAIRED=$(mktemp)
+          curl -sSfL --retry 3 \
+            "https://raw.githubusercontent.com/siderolabs/talos/${REF}/hack/modules-amd64.txt" \
+            -o "$PAIRED"
+          # A failed/empty fetch must not read as "nothing to add" -- that is the
+          # silent-no-op this step exists to prevent.
+          test -s "$PAIRED" || { echo "paired allowlist from $REF is empty" >&2; exit 1; }
+
+          BEFORE=$(wc -l < hack/modules-amd64.txt)
+          sort -u hack/modules-amd64.txt "$PAIRED" -o hack/modules-amd64.txt
+          AFTER=$(wc -l < hack/modules-amd64.txt)
+          echo "module allowlist: ${BEFORE} -> ${AFTER} lines (union with talos ${REF})"
+          comm -13 <(sort -u "$PAIRED") <(sort -u hack/modules-amd64.txt) \
+            | sed 's/^/  kept (not in paired ref): /'
+          git --no-pager diff --stat hack/modules-amd64.txt
 
       - name: Resolve dind socket
         run: |

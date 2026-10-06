@@ -196,12 +196,13 @@ fi
 echo "anonymous pull path verified: $DESTINATION:$TAG = $anon_digest"
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  # printf -- : a format string starting with '-' is parsed as an option by the bash builtin.
   {
     printf '### Harbor promotion\n\n'
-    printf '- source: `%s`\n' "$SOURCE"
-    printf '- destination: `%s:%s`\n' "$DESTINATION" "$TAG"
-    printf '- digest: `%s` (%s)\n' "$SOURCE_DIGEST" "$DECISION"
-    printf '- anonymous pull verified\n\n'
+    printf -- '- source: `%s`\n' "$SOURCE"
+    printf -- '- destination: `%s:%s`\n' "$DESTINATION" "$TAG"
+    printf -- '- digest: `%s` (%s)\n' "$SOURCE_DIGEST" "$DECISION"
+    printf -- '- anonymous pull verified\n\n'
     printf 'Deploy with:\n\n```\ntalosctl upgrade --image %s@%s\n```\n' \
       "$DESTINATION" "$SOURCE_DIGEST"
   } >> "$GITHUB_STEP_SUMMARY"
