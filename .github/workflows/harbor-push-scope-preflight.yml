@@ -1,0 +1,57 @@
+# BLO-39281. Answers the one precondition the signed-installer Harbor
+# promotion shipped without: may this repo's HARBOR_USERNAME/HARBOR_PASSWORD
+# actually PUSH to the `library` project?
+#
+# Dispatch-only and deliberately NOT wired into compose-signed-installer.yml.
+# Two reasons: the promotion already fails loudly and names the credential, so
+# a preflight there would only move the failure a few minutes earlier; and
+# coupling a probe to the production build path risks breaking a promotion
+# that works. The value here is being able to ask the question at a convenient
+# moment instead of discovering the answer mid-rollout, 30 minutes into a
+# build, with the runbook's manual skopeo escape hatch deleted.
+#
+# Writes nothing to any registry. It reads the scope Harbor grants its own
+# freshly minted token -- see the script's header for why that is a complete
+# answer and why a 200 from the token endpoint is not.
+name: harbor-push-scope-preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: >-
+          Harbor repository to probe, without the host. Defaults to the one the
+          signed-installer promotion targets.
+        default: library/talos-installer
+        type: string
+      host:
+        description: Harbor host. registry.blockcast.net is the same instance.
+        default: harbor.blockcast.net
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Inputs reach the script through env, never interpolated into the shell
+      # body: `${{ }}` is substituted before bash parses the line, so a quote
+      # in an input would otherwise be executable text.
+      - name: Probe Harbor push scope
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+          PROBE_HOST: ${{ inputs.host }}
+          PROBE_REPOSITORY: ${{ inputs.repository }}
+        run: |
+          .github/scripts/harbor-push-scope-preflight.sh \
+            --host "$PROBE_HOST" \
+            --repository "$PROBE_REPOSITORY"

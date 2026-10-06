@@ -18,9 +18,13 @@ on:
       - .github/scripts/promote-installer-to-harbor.sh
       - .github/scripts/test-promote-installer-to-harbor.sh
       - .github/scripts/test-promote-installer-mutations.sh
+      - .github/scripts/harbor-push-scope-preflight.sh
+      - .github/scripts/test-harbor-push-scope-preflight.sh
+      - .github/scripts/test-harbor-push-scope-mutations.sh
       - .github/scripts/test-compose-output.py
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
+      - .github/workflows/harbor-push-scope-preflight.yml
   push:
     branches:
       - main
@@ -30,9 +34,13 @@ on:
       - .github/scripts/promote-installer-to-harbor.sh
       - .github/scripts/test-promote-installer-to-harbor.sh
       - .github/scripts/test-promote-installer-mutations.sh
+      - .github/scripts/harbor-push-scope-preflight.sh
+      - .github/scripts/test-harbor-push-scope-preflight.sh
+      - .github/scripts/test-harbor-push-scope-mutations.sh
       - .github/scripts/test-compose-output.py
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
+      - .github/workflows/harbor-push-scope-preflight.yml
 
 permissions:
   contents: read
@@ -58,3 +66,12 @@ jobs:
       # quietly deleted while its tests keep passing.
       - name: Every guard has a failing mutation
         run: .github/scripts/test-promote-installer-mutations.sh
+
+      # The push-scope preflight is dispatch-only, so like the promotion itself
+      # its guards would otherwise first be exercised by a human running it in
+      # anger. Same lane, same reason.
+      - name: Harbor push-scope preflight guards
+        run: .github/scripts/test-harbor-push-scope-preflight.sh
+
+      - name: Every preflight guard has a failing mutation
+        run: .github/scripts/test-harbor-push-scope-mutations.sh

@@ -37,7 +37,9 @@ set -euo pipefail
 # Split out as a pure function with no registry access so it can be exercised
 # directly -- see test-promote-installer-to-harbor.sh. A guard with no failing
 # mutation is a comment, and this one is the difference between re-publishing a
-# tag the runbook resolves digests through and refusing to.
+# tag the runbook resolves digests through and refusing to. That read is
+# Blockcast/onprem-k8s .planning/2026-07-17-amt-6.18.38-secureboot-rollout-runbook.md
+# §1 -- re-verify there rather than re-deriving this premise (BLO-39281).
 #
 #   existing  destination digest, empty when the tag does not exist
 #   source    digest this run pushed
@@ -138,9 +140,14 @@ EXISTING_DIGEST=$(crane digest "$DESTINATION:$TAG" 2>/dev/null) || {
     echo "so a first-ever promotion into a new repository also lands here). Neither" >&2
     echo "is safe to treat as an absent tag: in the first case that would overwrite" >&2
     echo "whatever is actually there. The push credential is HARBOR_USERNAME/HARBOR_PASSWORD" >&2
-    echo "in Blockcast/pkgs; it is proven to authenticate to registry.blockcast.net" >&2
-    echo "but its push scope to the 'library' project has not been established." >&2
-    echo "Route a named credential ask rather than widening any grant here." >&2
+    echo "in Blockcast/pkgs." >&2
+    echo "" >&2
+    echo "Tell the two causes apart WITHOUT writing anything: dispatch" >&2
+    echo "harbor-push-scope-preflight.yml in this repo. It asks Harbor for a push" >&2
+    echo "token and reports the scope actually granted, which separates 'the" >&2
+    echo "credential may not push here' from 'the repository does not exist yet'." >&2
+    echo "If it reports a scope problem, route a named credential ask rather than" >&2
+    echo "widening any grant here." >&2
     exit 1
   fi
 }
