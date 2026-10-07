@@ -3,8 +3,17 @@
 # ci.yaml AND BOTH .github/workflows/slack-notify*.yaml AND WILL DROP EIGHT
 # HAND-EDITS THAT ARE NOT EXPRESSIBLE HERE.
 # Re-apply all eight after running it:
-#   1. weekly.yaml: `runs-on: pkgs-public`  (kres emits `group: pkgs`) — BLO-21948
-#   2. weekly.yaml: `timeout-minutes: 960`  on `reproducibility` — BLO-37661
+#   1. weekly.yaml: RESTRUCTURED for GitHub-hosted runners (board card
+#      04d714a4). kres emits one `group: pkgs` job running
+#      `make reproducibility-test`; that took 9h06m on the cluster and cannot
+#      fit GitHub-hosted's 6h job ceiling. The hand version is a `build` matrix
+#      (platform x copy, arm64 on native ubuntu-24.04-arm) plus a per-platform
+#      `diff` job, adds `workflow_dispatch`, and sets `contents: read`. Restore
+#      the whole file from git after rekres -- do not re-route it to a
+#      self-hosted group: `pkgs` (id 6) stays closed to public repositories.
+#      Supersedes the `runs-on: pkgs-public` edit (BLO-21948).
+#   2. (retired with 1) weekly.yaml `timeout-minutes: 960` — BLO-37661.
+#      GitHub-hosted jobs cap at 360; each build job now sets exactly that.
 #   3. ci.yaml: `"on"` REDUCED to `workflow_dispatch: {}` — the `push` and
 #      `pull_request` triggers are deliberately removed — BLO-37063.
 #      Both ci.yaml jobs are `runs-on: pkgs`, a runner group with
@@ -57,22 +66,17 @@
 #      group a public repo may not use, which queues 24h and is reaped. A
 #      nonexistent group fails in one second. Both read as a dead notifier; only
 #      the annotation tells them apart. (6) is inert without (7) — keep together.
-#   8. weekly.yaml: an `install-diffoscope` step added BEFORE
-#      `reproducibility-test` — BLO-40437. Makefile:234 ends the target with
-#      `diffoscope build-a build-b`; diffoscope is in neither this fork nor
-#      upstream (siderolabs/pkgs assumes its own runners carry it) and is absent
-#      from the arc-runner image. Run 37253805723 finished BOTH builds and died
-#      on that last line, `Error 127`, 9h06m in. Keep it BEFORE the build step:
-#      after it, any failure discards ~9h of completed work. Keep the
-#      `diffoscope --version` probe — an install that silently no-ops
-#      reproduces the identical Error 127 nine hours later. A containerised
-#      diffoscope is impossible here (no local Docker daemon on the runner; the
-#      buildx driver is `remote`), and baking it into the arc-runner image was
-#      rejected because one image sha serves 24 scale sets.
-# Neither has a spec field: kres builds that job as a Go literal with no
-# TimeoutMinutes and no runner override (siderolabs/kres
+#   8. weekly.yaml: the `install-diffoscope` step, now first in the `diff`
+#      job of (1) — BLO-40437. Makefile:234 ends the target with
+#      `diffoscope build-a build-b`; diffoscope is on no runner image
+#      (siderolabs/pkgs assumes its own runners carry it). Run 37253805723
+#      finished BOTH builds and died on that last line, `Error 127`, 9h06m in.
+#      Keep the `diffoscope --version` probe — an install that silently no-ops
+#      reproduces the identical Error 127 after the builds.
+# None of the weekly.yaml edits has a spec field: kres builds that job as a Go
+# literal with no runner, timeout or job-shape override (siderolabs/kres
 # internal/project/pkgfile/build.go, the weekly Workflow in CompileGitHubWorkflow).
-# The durable fix is a `reproducibilityTimeoutMinutes` knob upstream in kres.
+# The durable fix is a knob upstream in kres to stop generating weekly.yaml.
 #
 # A THIRD drift-prone edit exists, by a DIFFERENT mechanism -- `rekres` does not
 # touch it, an upstream sync reverts it: the `network: default` retry blocks in
