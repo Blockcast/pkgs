@@ -5,10 +5,11 @@
 # Re-apply all eight after running it:
 #   1. weekly.yaml: RESTRUCTURED for GitHub-hosted runners (board card
 #      04d714a4). kres emits one `group: pkgs` job running
-#      `make reproducibility-test`; that took 9h06m on the cluster and cannot
-#      fit GitHub-hosted's 6h job ceiling. The hand version is a `build` matrix
-#      (platform x copy, arm64 on native ubuntu-24.04-arm) plus a per-platform
-#      `diff` job, adds `workflow_dispatch`, and sets `contents: read`. Restore
+#      `make reproducibility-test`; that took 9h06m on the cluster, nearly all
+#      of it QEMU-emulated arm64, past GitHub-hosted's 6h job ceiling. The hand
+#      version is a `build` matrix (platform x copy, arm64 on native
+#      ubuntu-24.04-arm; 11m/25m per copy) plus a per-platform `diff` job,
+#      adds `workflow_dispatch`, and sets `contents: read`. Restore
 #      the whole file from git after rekres -- do not re-route it to a
 #      self-hosted group: `pkgs` (id 6) stays closed to public repositories.
 #      Supersedes the `runs-on: pkgs-public` edit (BLO-21948).

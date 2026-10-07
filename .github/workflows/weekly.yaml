@@ -6,18 +6,17 @@
 # public repositories, and `pkgs-public` (id 14) is no longer needed by this
 # repo (board card 04d714a4).
 #
-# The upstream single job (`make reproducibility-test`) cannot fit a
-# GitHub-hosted job's 6h ceiling: on the cluster it took 9h06m (run
-# 37253805723: build-a 4h48m, build-b 4h17m, both bounded by the
-# QEMU-emulated arm64 half; amd64 finished in 1h55m / 1h08m on a 16-CPU
-# BuildKit). So it is split the way the Makefile's
-# reproducibility-test-local-% recipe already is:
+# Upstream's single multi-platform job took 9h06m on the cluster (run
+# 37253805723), almost all of it the QEMU-emulated arm64 half (4h48m + 4h17m).
+# Split the way the Makefile's reproducibility-test-local-% recipe already is:
 #   build: one cold `make local-reproducibility` per platform x copy, each on a
-#          fresh native runner (arm64 on ubuntu-24.04-arm, no QEMU), output
-#          tarred and uploaded.
+#          fresh NATIVE runner (arm64 on ubuntu-24.04-arm), tarred and uploaded.
+#          Measured in run 37557926561: arm64 11m, amd64 25m per copy.
 #   diff:  the recipe's last two lines -- touch + diffoscope -- per platform.
-# A fresh runner has no BuildKit cache, so both copies are cold builds on
-# different machines; the recipe's `--no-cache` on build-b is implied.
+# Both copies are cold builds on different machines (a fresh runner has no
+# BuildKit cache, so the recipe's `--no-cache` on build-b is implied). Only the
+# build is retried; diffoscope is not, so an intermittently non-reproducible
+# output cannot be retried into a pass.
 
 concurrency:
   group: ${{ github.head_ref || github.run_id }}
