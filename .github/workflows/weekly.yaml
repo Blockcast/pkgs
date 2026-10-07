@@ -66,8 +66,9 @@ jobs:
             echo "${OUTPUT}"
           done
         continue-on-error: true
-      # Standard runners guarantee 14GB of SSD. Drop preinstalled SDKs this
-      # build never uses so BuildKit's state has room.
+      # Standard runners guarantee only 14GB of SSD; the image actually had 86G
+      # free on / (108G after this step) in run 37557259049. Drop preinstalled
+      # SDKs this build never uses so BuildKit's state has room either way.
       - name: free-disk-space
         run: |
           df -h /
@@ -80,9 +81,17 @@ jobs:
           git fetch --prune --unshallow
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # version: v4.2.0
+      # One retry. A single fetch fault fails the whole solve: run 37557259049
+      # got the wrong bytes for pigz from zlib.net on 1 of 4 runners
+      # (digest mismatch) while the other 3 fetched it fine. The retry solves on
+      # the same builder, so every vertex that already finished is reused.
       - name: build
         run: |
-          make local-reproducibility PLATFORM=linux/${{ matrix.platform }} DEST=_out/build-${{ matrix.copy }}
+          build() {
+            rm -rf _out/build-${{ matrix.copy }}
+            make local-reproducibility PLATFORM=linux/${{ matrix.platform }} DEST=_out/build-${{ matrix.copy }}
+          }
+          build || { echo "::warning::build failed; retrying once on the same builder"; sleep 60; build; }
           df -h /
       # tar, not the artifact zip: diffoscope compares modes, symlinks and
       # mtimes, which the zip round-trip does not preserve.
