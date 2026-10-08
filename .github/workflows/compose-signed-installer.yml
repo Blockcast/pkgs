@@ -65,7 +65,7 @@ jobs:
     steps:
       # This job did not previously check out, because nothing in it read a
       # repo file. The Harbor promotion below runs .github/scripts/, so it does
-      # now. Same SHA this repo's generated ci.yaml already uses.
+      # now. Same SHA main's compose-signed-installer.yml uses.
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
