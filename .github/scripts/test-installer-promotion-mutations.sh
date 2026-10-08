@@ -39,7 +39,7 @@ python3 - "$script" <<'PY'
 import sys
 path = sys.argv[1]
 s = open(path).read()
-old = "if ! grep -v '^[[:space:]]*#' \"$REF_WORKFLOW\" 2>/dev/null \\"
+old = "if ! sed 's/[[:space:]]#.*$//; s/^[[:space:]]*#.*$//' \"$REF_WORKFLOW\" 2>/dev/null \\"
 assert old in s, "invocation arm not found -- update this mutation"
 open(path, "w").write(s.replace(old, "if false && grep -v . \"$REF_WORKFLOW\" 2>/dev/null \\", 1))
 PY
@@ -76,7 +76,7 @@ python3 - "$script" <<'PY'
 import sys
 path = sys.argv[1]
 s = open(path).read()
-old = "grep -v '^[[:space:]]*#' \"$REF_WORKFLOW\" 2>/dev/null"
+old = "sed 's/[[:space:]]#.*$//; s/^[[:space:]]*#.*$//' \"$REF_WORKFLOW\" 2>/dev/null"
 assert old in s, "comment stripping not found -- update this mutation"
 open(path, "w").write(s.replace(old, "cat \"$REF_WORKFLOW\" 2>/dev/null", 1))
 PY
@@ -93,5 +93,18 @@ assert old in s, "list-item stripping not found -- update this mutation"
 open(path, "w").write(s.replace(old, "| cat \\", 1))
 PY
 assert_caught "list-item stripping removed"
+
+# 6. Inline-comment stripping alone. Without it a step whose `run:` line keeps
+#    the call only after a trailing `#` reads as a call; whole-line stripping
+#    (mutation 4) cannot see that case.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "sed 's/[[:space:]]#.*$//; s/^[[:space:]]*#.*$//'"
+assert old in s, "inline-comment stripping not found -- update this mutation"
+open(path, "w").write(s.replace(old, "sed 's/^[[:space:]]*#.*$//'", 1))
+PY
+assert_caught "inline-comment stripping removed"
 
 echo "all mutations caught"
