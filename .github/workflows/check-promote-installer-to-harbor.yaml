@@ -21,10 +21,14 @@ on:
       - .github/scripts/harbor-push-scope-preflight.sh
       - .github/scripts/test-harbor-push-scope-preflight.sh
       - .github/scripts/test-harbor-push-scope-mutations.sh
+      - .github/scripts/check-installer-promotion-drift.sh
+      - .github/scripts/test-installer-promotion-drift.sh
+      - .github/scripts/test-installer-promotion-mutations.sh
       - .github/scripts/test-compose-output.py
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
       - .github/workflows/harbor-push-scope-preflight.yml
+      - .github/workflows/check-installer-promotion-drift.yaml
   push:
     branches:
       - main
@@ -37,10 +41,14 @@ on:
       - .github/scripts/harbor-push-scope-preflight.sh
       - .github/scripts/test-harbor-push-scope-preflight.sh
       - .github/scripts/test-harbor-push-scope-mutations.sh
+      - .github/scripts/check-installer-promotion-drift.sh
+      - .github/scripts/test-installer-promotion-drift.sh
+      - .github/scripts/test-installer-promotion-mutations.sh
       - .github/scripts/test-compose-output.py
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
       - .github/workflows/harbor-push-scope-preflight.yml
+      - .github/workflows/check-installer-promotion-drift.yaml
 
 permissions:
   contents: read
@@ -75,3 +83,12 @@ jobs:
 
       - name: Every preflight guard has a failing mutation
         run: .github/scripts/test-harbor-push-scope-mutations.sh
+
+      # The ref-drift guard is triggered by workflow_run, so like the two
+      # above it would otherwise first be exercised in anger -- and its whole
+      # job is to be the thing that notices when nothing else does.
+      - name: Promotion ref-drift guards
+        run: .github/scripts/test-installer-promotion-drift.sh
+
+      - name: Every ref-drift guard has a failing mutation
+        run: .github/scripts/test-installer-promotion-mutations.sh
