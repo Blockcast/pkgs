@@ -53,13 +53,22 @@ BRANCH=$4
 }
 
 # A missing or unreadable ref file reaches here as an empty file, and every
-# check below treats empty as failing. That is deliberate: a fetch that returned
-# nothing and a ref that genuinely carries nothing are the same answer for this
-# guard's purpose, and the alternative -- treating an unreadable ref as "assume
-# fine" -- is the failure direction that lets the hole through.
+# check below treats empty as failing. That is deliberate: treating an
+# unreadable ref as "assume fine" is the failure direction that lets the hole
+# through. The caller only writes an empty file for a 404 -- a ref that really
+# lacks the file -- and fails its own fetch step with exit 2 on any other
+# status, so a throttled or 5xx fetch is never reported as a gap in the branch.
 fail=0
 
-if ! grep -q 'promote-installer-to-harbor\.sh' "$REF_WORKFLOW" 2>/dev/null; then
+# A mention is not an invocation. Comment lines go first, because commenting a
+# step out is the likeliest way a build branch disables the promotion and the
+# commented-out call still names the script. A bare YAML list item naming the
+# path goes next, because that is a `paths:` filter entry, not a call. No
+# `grep -q` at the end of the pipe: under pipefail its early exit can SIGPIPE
+# the upstream grep and turn a real invocation into a FAIL.
+if ! grep -v '^[[:space:]]*#' "$REF_WORKFLOW" 2>/dev/null \
+     | grep -Ev '^[[:space:]]*-[[:space:]]+[^[:space:]]*promote-installer-to-harbor\.sh[^[:space:]]?[[:space:]]*$' \
+     | grep 'promote-installer-to-harbor\.sh' >/dev/null; then
   echo "FAIL: $BRANCH dispatched compose-signed-installer, but its copy of" >&2
   echo "      .github/workflows/compose-signed-installer.yml never invokes" >&2
   echo "      .github/scripts/promote-installer-to-harbor.sh." >&2

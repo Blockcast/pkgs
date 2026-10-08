@@ -45,14 +45,27 @@ jobs:
             .github/scripts/promote-installer-to-harbor.sh
           do
             out="$RUNNER_TEMP/ref/$(basename "$path")"
-            # gh api writes its ERROR BODY to stdout on a 404, so a bare
-            # redirect leaves a JSON error document sitting where the file
-            # should be. Truncate on any non-zero exit: the guard treats an
-            # empty file as "this ref carries nothing", which is the
-            # fail-closed reading. "I could not fetch it" must never read as
-            # "it is fine".
-            gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$REF" \
-              -H "Accept: application/vnd.github.raw" > "$out" || : > "$out"
+            # Only a 404 means "this ref carries nothing", and only that case
+            # becomes the empty file the guard reads as a gap. Any other status
+            # (403/rate limit, 5xx) is "I could not fetch it": fail the step on
+            # its own terms with exit 2, so a throttled run never reports a
+            # definite finding about the branch. Either way the run is red;
+            # "I could not fetch it" must never read as "it is fine". curl
+            # rather than gh api, because the HTTP status is what decides, and
+            # gh api reports every HTTP error as the same exit 1. A transport
+            # failure exits curl non-zero, which set -e already reports.
+            code=$(curl -sS -o "$out" -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$path?ref=$REF")
+            case "$code" in
+              200) ;;
+              404) : > "$out" ;;
+              *)
+                echo "::error::could not fetch $path at $REF: HTTP $code. This is a fetch failure, not a finding about the branch." >&2
+                exit 2
+                ;;
+            esac
           done
 
       - name: The dispatched ref carries the Harbor promotion

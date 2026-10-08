@@ -21,6 +21,15 @@ printf 'echo DRIFTED\n' > "$work/drifted.sh"
 printf 'steps:\n  - run: .github/scripts/promote-installer-to-harbor.sh --source "$OUT"\n' \
   > "$work/with-promotion.yml"
 printf 'steps:\n  - run: docker push "$OUT"\n' > "$work/without-promotion.yml"
+# A mention is not an invocation: a commented-out step and a `paths:` filter
+# entry both name the script and neither runs it.
+printf 'steps:\n  - name: Promote\n    # TODO re-enable: .github/scripts/promote-installer-to-harbor.sh "${args[@]}"\n    run: echo skipping promotion\n' \
+  > "$work/commented-promotion.yml"
+printf 'on:\n  push:\n    paths:\n      - .github/scripts/promote-installer-to-harbor.sh\n      - "src/**"\nsteps:\n  - run: docker push "$OUT"\n' \
+  > "$work/paths-only-promotion.yml"
+# A multi-line run block that calls the script from inside it must still pass.
+printf 'steps:\n  - name: Promote\n    run: |\n      set -euo pipefail\n      .github/scripts/promote-installer-to-harbor.sh "${args[@]}"\n' \
+  > "$work/block-promotion.yml"
 : > "$work/empty.yml"
 
 run() { "$script" "$1" "$2" "$canonical" some-branch >"$work/out" 2>"$work/err"; }
@@ -56,6 +65,15 @@ assert_ok "ref carries the promotion and the canonical script" \
 
 assert_fails_naming "ref never invokes the promotion" \
   "$work/without-promotion.yml" "$work/same.sh" "never invokes"
+
+assert_fails_naming "a commented-out promotion step is not an invocation" \
+  "$work/commented-promotion.yml" "$work/same.sh" "never invokes"
+
+assert_fails_naming "a paths: filter entry is not an invocation" \
+  "$work/paths-only-promotion.yml" "$work/same.sh" "never invokes"
+
+assert_ok "a call inside a multi-line run block is an invocation" \
+  "$work/block-promotion.yml" "$work/same.sh"
 
 assert_fails_naming "ref's copy of the promotion script has drifted" \
   "$work/with-promotion.yml" "$work/drifted.sh" "byte-identical"

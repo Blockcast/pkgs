@@ -39,9 +39,9 @@ python3 - "$script" <<'PY'
 import sys
 path = sys.argv[1]
 s = open(path).read()
-old = "if ! grep -q 'promote-installer-to-harbor\\.sh' \"$REF_WORKFLOW\" 2>/dev/null; then"
+old = "if ! grep -v '^[[:space:]]*#' \"$REF_WORKFLOW\" 2>/dev/null \\"
 assert old in s, "invocation arm not found -- update this mutation"
-open(path, "w").write(s.replace(old, "if false; then", 1))
+open(path, "w").write(s.replace(old, "if false && grep -v . \"$REF_WORKFLOW\" 2>/dev/null \\", 1))
 PY
 assert_caught "invocation arm removed"
 
@@ -69,5 +69,29 @@ assert old in s, "terminal exit not found -- update this mutation"
 open(path, "w").write(s.replace(old, 'if false; then\n  exit 1\nfi', 1))
 PY
 assert_caught "failing exit removed"
+
+# 4. Comment stripping. Without it a commented-out promotion step -- the
+#    likeliest way a build branch disables the mirror -- reports OK.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "grep -v '^[[:space:]]*#' \"$REF_WORKFLOW\" 2>/dev/null"
+assert old in s, "comment stripping not found -- update this mutation"
+open(path, "w").write(s.replace(old, "cat \"$REF_WORKFLOW\" 2>/dev/null", 1))
+PY
+assert_caught "comment stripping removed"
+
+# 5. List-item stripping. Without it a `paths:` filter entry naming the script
+#    reads as a call.
+python3 - "$script" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "| grep -Ev '^[[:space:]]*-[[:space:]]+[^[:space:]]*promote-installer-to-harbor\\.sh[^[:space:]]?[[:space:]]*$' \\"
+assert old in s, "list-item stripping not found -- update this mutation"
+open(path, "w").write(s.replace(old, "| cat \\", 1))
+PY
+assert_caught "list-item stripping removed"
 
 echo "all mutations caught"
