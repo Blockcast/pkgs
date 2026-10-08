@@ -14,12 +14,27 @@
 # excluded: housekeeping crons, not actionable CI. The `if:` below is unchanged
 # and still matches `failure` only; widening it to `cancelled` would spam the
 # channel from routine cancel-in-progress and is a separate decision.
+#
+# BLO-39281: check-installer-promotion-drift added above. UNVERIFIED and
+# deliberately recorded as such: this trigger's `branches: - main` filters on
+# the TRIGGERING run's branch, and that guard fires only for compose runs on
+# NON-main refs -- so whether its failures reach #ci-failure depends on whether
+# a workflow_run-triggered run reports head_branch as `main` or inherits the
+# branch that triggered it. Every workflow_run run in this repo reports `main`,
+# including under slack-notify.yaml which has no branches filter, but all of
+# those producers only ever run on main, so that reading is confounded and is
+# not evidence. Settle it on first fire: dispatch compose-signed-installer on a
+# ref lacking the promotion and check whether a slack-notify-failure run
+# appears. If it does not, the fix is a branches-filter decision for BLO-40066,
+# not a change to the guard. The red run in the Actions tab is the signal
+# either way; this is about whether it is also pushed.
 'on':
   workflow_run:
     workflows:
       - default
       - check-build-params
       - check-promote-installer-to-harbor
+      - check-installer-promotion-drift
       - harbor-registry-photon
       - weekly
     types:
