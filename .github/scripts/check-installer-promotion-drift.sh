@@ -60,13 +60,16 @@ BRANCH=$4
 # status, so a throttled or 5xx fetch is never reported as a gap in the branch.
 fail=0
 
-# A mention is not an invocation. Comment lines go first, because commenting a
+# A mention is not an invocation. Comments go first, because commenting a
 # step out is the likeliest way a build branch disables the promotion and the
-# commented-out call still names the script. A bare YAML list item naming the
+# commented-out call still names the script. That covers a whole-line comment
+# AND a trailing one (`run: echo skip   # ...promote-installer-to-harbor.sh`):
+# the sed drops everything from a whitespace-preceded `#` to end of line. A
+# `#` with no space before it (`${#args[@]}`) is not a comment and survives. A bare YAML list item naming the
 # path goes next, because that is a `paths:` filter entry, not a call. No
 # `grep -q` at the end of the pipe: under pipefail its early exit can SIGPIPE
 # the upstream grep and turn a real invocation into a FAIL.
-if ! grep -v '^[[:space:]]*#' "$REF_WORKFLOW" 2>/dev/null \
+if ! sed 's/[[:space:]]#.*$//; s/^[[:space:]]*#.*$//' "$REF_WORKFLOW" 2>/dev/null \
      | grep -Ev '^[[:space:]]*-[[:space:]]+[^[:space:]]*promote-installer-to-harbor\.sh[^[:space:]]?[[:space:]]*$' \
      | grep 'promote-installer-to-harbor\.sh' >/dev/null; then
   echo "FAIL: $BRANCH dispatched compose-signed-installer, but its copy of" >&2

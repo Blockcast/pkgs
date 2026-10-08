@@ -25,6 +25,10 @@ printf 'steps:\n  - run: docker push "$OUT"\n' > "$work/without-promotion.yml"
 # entry both name the script and neither runs it.
 printf 'steps:\n  - name: Promote\n    # TODO re-enable: .github/scripts/promote-installer-to-harbor.sh "${args[@]}"\n    run: echo skipping promotion\n' \
   > "$work/commented-promotion.yml"
+# ...and so is one disabled by a trailing comment: the call text survives after
+# an `echo`, which a whole-line comment strip never sees.
+printf 'steps:\n  - run: echo skip   # .github/scripts/promote-installer-to-harbor.sh "${args[@]}"\n' \
+  > "$work/inline-commented-promotion.yml"
 printf 'on:\n  push:\n    paths:\n      - .github/scripts/promote-installer-to-harbor.sh\n      - "src/**"\nsteps:\n  - run: docker push "$OUT"\n' \
   > "$work/paths-only-promotion.yml"
 # A multi-line run block that calls the script from inside it must still pass.
@@ -68,6 +72,9 @@ assert_fails_naming "ref never invokes the promotion" \
 
 assert_fails_naming "a commented-out promotion step is not an invocation" \
   "$work/commented-promotion.yml" "$work/same.sh" "never invokes"
+
+assert_fails_naming "a call behind a trailing comment is not an invocation" \
+  "$work/inline-commented-promotion.yml" "$work/same.sh" "never invokes"
 
 assert_fails_naming "a paths: filter entry is not an invocation" \
   "$work/paths-only-promotion.yml" "$work/same.sh" "never invokes"
