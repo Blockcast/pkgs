@@ -139,5 +139,28 @@ for bad in "ghcr.io/blockcast/installer" "docker.io/blockcast/installer:v1" \
     "$(PATH="$stub_dir:$PATH" "$script" --source "$bad" 2>&1 || true)"
 done
 
+# ------------------------------------------------------- the run summary
+# This block was inline at the bottom of the script and therefore unreachable
+# from here, so nothing noticed that `printf '- source: ...'` is parsed by bash
+# as an OPTION. It took until the first installer-profile dispatch that ever
+# reached it (2026-10-08, run 37753187708) to surface, as a failed step after
+# every substantive assertion in the script had already passed -- a red run for
+# a promotion that had completely succeeded. Run it for real and require exit 0.
+summary_out=$(mktemp)
+summary_rc=0
+# A separate bash PROCESS, not a subshell. `( ... ) || rc=$?` would put the
+# subshell on the left of a ||, which disables errexit inside it -- and the
+# whole point here is to reproduce the errexit the workflow step runs under.
+GITHUB_STEP_SUMMARY="$summary_out" bash -euo pipefail -c '
+  PROMOTE_INSTALLER_LIB_ONLY=1 . "$1"
+  write_step_summary "ghcr.io/blockcast/installer:t" \
+    "harbor.blockcast.net/library/talos-installer" t "$2" copy
+' _ "$script" "$A" >/dev/null 2>&1 || summary_rc=$?
+check "step summary renders without a printf error" 0 "$summary_rc"
+expect_output "step summary carries the deploy digest" "$A" "$(cat "$summary_out")"
+expect_output "step summary carries the deploy command" \
+  'talosctl upgrade --image' "$(cat "$summary_out")"
+rm -f "$summary_out"
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -74,6 +74,35 @@ promotion_decision() {
   return 0
 }
 
+# The run summary a human reads to get the deploy command.
+#
+# A function, above the lib-only guard, so the test can run it. It used to be
+# an inline block at the bottom of the script, and in that position NOTHING
+# exercised it: the tests source this file with PROMOTE_INSTALLER_LIB_ONLY=1
+# and stop at the guard below, and the only other caller is a live
+# compose-signed-installer run with a Harbor credential. It shipped with
+# `printf '- source: ...'`, which bash's printf builtin parses as an OPTION
+# ("printf: - : invalid option", exit 2), so the first installer-profile
+# dispatch that ever reached it -- 2026-10-08, run 37753187708 -- failed the
+# step AFTER the promotion, the digest-equality assertion and the anonymous
+# pull had all succeeded. Hence the `--` terminators below, and hence this
+# being a function.
+write_step_summary() {
+  local source=$1 destination=$2 tag=$3 digest=$4 decision=$5
+
+  [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+
+  {
+    printf -- '### Harbor promotion\n\n'
+    printf -- '- source: `%s`\n' "$source"
+    printf -- '- destination: `%s:%s`\n' "$destination" "$tag"
+    printf -- '- digest: `%s` (%s)\n' "$digest" "$decision"
+    printf -- '- anonymous pull verified\n\n'
+    printf -- 'Deploy with:\n\n```\ntalosctl upgrade --image %s@%s\n```\n' \
+      "$destination" "$digest"
+  } >> "$GITHUB_STEP_SUMMARY"
+}
+
 # Sourced by the test for the function above; skip the side-effecting half.
 if [[ "${PROMOTE_INSTALLER_LIB_ONLY:-0}" == 1 ]]; then
   return 0 2>/dev/null || exit 0
@@ -204,14 +233,4 @@ if [[ "$anon_digest" != "$SOURCE_DIGEST" ]]; then
 fi
 echo "anonymous pull path verified: $DESTINATION:$TAG = $anon_digest"
 
-if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  {
-    printf '### Harbor promotion\n\n'
-    printf '- source: `%s`\n' "$SOURCE"
-    printf '- destination: `%s:%s`\n' "$DESTINATION" "$TAG"
-    printf '- digest: `%s` (%s)\n' "$SOURCE_DIGEST" "$DECISION"
-    printf '- anonymous pull verified\n\n'
-    printf 'Deploy with:\n\n```\ntalosctl upgrade --image %s@%s\n```\n' \
-      "$DESTINATION" "$SOURCE_DIGEST"
-  } >> "$GITHUB_STEP_SUMMARY"
-fi
+write_step_summary "$SOURCE" "$DESTINATION" "$TAG" "$SOURCE_DIGEST" "$DECISION"
