@@ -43,6 +43,15 @@ on:
       out_tag:
         default: 'ghcr.io/blockcast/installer:v1.14.0-amt-ct6-mroute-signed'
         type: string
+      overwrite_harbor_tag:
+        description: >-
+          Repoint an EXISTING harbor.blockcast.net/library/talos-installer tag at
+          this build. Off by default: the runbook reads the digest it pins through
+          this tag, so repointing one makes that read hand out this build for nodes
+          already rolled on the old one. Promoting an identical digest is a no-op
+          and needs no flag.
+        default: false
+        type: boolean
 concurrency:
   group: compose-signed-installer-${{ github.ref }}
   cancel-in-progress: false
@@ -54,6 +63,13 @@ jobs:
       contents: read
       packages: write
     steps:
+      # This job did not previously check out, because nothing in it read a
+      # repo file. The Harbor promotion below runs .github/scripts/, so it does
+      # now. Same SHA main's compose-signed-installer.yml uses.
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Resolve dind
         run: docker version || { echo "docker daemon not reachable" >&2; exit 1; }
       - name: Login to ghcr
@@ -63,6 +79,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Compose signed boot artifact
+        id: compose
         env:
           # Cross-repo pull: the imager fetches the SIGNED amt-kmod extension
           # (Blockcast/linux-amt, private), which this repo's GITHUB_TOKEN cannot
@@ -193,7 +210,87 @@ jobs:
           echo "composed SecureBoot installer loaded as: ${LOADED}"
           docker tag  "$LOADED" "$OUT"
           docker push "$OUT"
+          # Only the installer profile reaches here -- the ISO branch above
+          # exits first -- so an empty `out` is exactly "this run published no
+          # image", which is what gates the Harbor promotion below.
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
           echo "Published deployable SecureBoot signed installer: $OUT"
+
+      # BLO-39281. The artifact above is now on ghcr, where the Talos nodes
+      # CANNOT pull it from -- they carry no ghcr credential, so the fleet's
+      # install.image is pinned to harbor.blockcast.net/library/talos-installer.
+      # Until now that gap was closed by hand, from the rollout runbook, with a
+      # `skopeo copy` whose --dest-creds carried the Harbor ADMIN password read
+      # out of the harbor-bootstrap-secrets cluster secret. Removing that
+      # credential from a human's command line is the main point of these
+      # steps; not re-running the copy by hand is the lesser one.
+      #
+      # These run AFTER the push on purpose. A Harbor failure here cannot
+      # corrupt or unpublish the signed installer -- it is already on ghcr by
+      # its digest -- so the blast radius of this addition is a red run, never
+      # a bad artifact. It is deliberately NOT allowed to fail softly: a
+      # silently skipped promotion is indistinguishable from a successful one
+      # right up to the moment a node tries to pull.
+      #
+      # Gated on the compose step's output rather than on
+      # `inputs.output_kind != 'secureboot-iso'`: there is no image to mirror
+      # exactly when the step published none, and reading that from the step
+      # itself cannot drift out of step with the branch above that decides it.
+      - name: Install pinned crane
+        if: steps.compose.outputs.out != ''
+        env:
+          CRANE_VERSION: v0.21.2
+          CRANE_ARCHIVE_SHA256: 897e7c342db072ba76531246fc18fbf3e8e298688b6ecf98916770984b263866
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/go-containerregistry_Linux_x86_64.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/google/go-containerregistry/releases/download/$CRANE_VERSION/go-containerregistry_Linux_x86_64.tar.gz" \
+            --output "$archive"
+          echo "$CRANE_ARCHIVE_SHA256  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" crane
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Promote the signed installer into Harbor
+        if: steps.compose.outputs.out != ''
+        env:
+          OUT: ${{ steps.compose.outputs.out }}
+          OVERWRITE: ${{ inputs.overwrite_harbor_tag }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in HARBOR_USERNAME HARBOR_PASSWORD; do
+            [ -n "${!name:-}" ] || {
+              echo "$name is required to promote into Harbor; refusing to skip silently" >&2
+              exit 1
+            }
+          done
+
+          # crane reads a Docker config, and this runner's docker login uses a
+          # credStore that crane cannot see (the same reason the imager above is
+          # handed its own config.json). So build one for crane explicitly
+          # rather than relying on the earlier `docker login` having left
+          # readable auths behind.
+          # umask 077: config.json below holds the Harbor push credential, and
+          # this is a shared self-hosted runner (same reason as the signing PEMs).
+          umask 077
+          crane_cfg="$RUNNER_TEMP/promote-docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$crane_cfg"
+          trap 'rm -rf "$crane_cfg"' EXIT
+          printf '{"auths":{"ghcr.io":{"auth":"%s"},"harbor.blockcast.net":{"auth":"%s"}}}' \
+            "$(printf '%s:%s' "$GHCR_USER" "$GHCR_TOKEN" | base64 -w0)" \
+            "$(printf '%s:%s' "$HARBOR_USERNAME" "$HARBOR_PASSWORD" | base64 -w0)" \
+            > "$crane_cfg/config.json"
+          export DOCKER_CONFIG="$crane_cfg"
+
+          args=(--source "$OUT")
+          if [ "${OVERWRITE:-false}" = true ]; then
+            args+=(--overwrite)
+          fi
+          .github/scripts/promote-installer-to-harbor.sh "${args[@]}"
 
       - name: Upload signed ISO
         if: inputs.output_kind == 'secureboot-iso'
