@@ -6,8 +6,8 @@ Subject: [PATCH] registry: concurrent bounded tag lookup and untag (backport
 
 Backport of distribution/distribution a2afe23f386e827d1975530aab12010f0be2a774
 ("add concurrency limits for tag lookup and untag", Liang Zheng) onto
-goharbor/distribution 0c62ec3ec8df7ea91c819448236a67f0777f929f, the
-revision Harbor v2.14.0 ships as registry_DO_NOT_USE_GC.
+goharbor/distribution ac7c4cedc2f4d45347630beceaaa1639bb9c771a, the
+revision Harbor v2.15.4 ships as registry_DO_NOT_USE_GC.
 
 tagStore.Lookup listed every tag in the repository and read each
 current/link serially. DeleteManifest calls it on every manifest delete,
@@ -23,8 +23,8 @@ count times the storage backend's per-object round trip.
   storage.tag.concurrencylimit (must be a non-negative int; NewApp
   panics otherwise, exactly as upstream). Unset or 0 means
   runtime.GOMAXPROCS(0).
-- Vendors golang.org/x/sync/errgroup at v0.3.0 (93782cc8), the version
-  upstream's go.mod pinned at a2afe23f38, recorded in vendor.conf.
+- Uses golang.org/x/sync v0.22.0, already recorded in this revision's
+  go.sum, through its Go module rather than the retired vendor.conf.
 
 Deliberate deviations from upstream, both so that a manifest DELETE
 never reports success while tags still point at the deleted manifest:
@@ -65,37 +65,23 @@ every referencing tag.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 ---
- configuration/configuration.go                |  17 +
+ configuration/configuration.go                |  17 ++
  configuration/configuration_test.go           |   8 +
- docs/configuration.md                         |  22 +
+ docs/configuration.md                         |  22 ++
+ go.mod                                        |   1 +
  registry/handlers/app.go                      |  15 +
- registry/handlers/manifests.go                |  47 +-
- registry/handlers/tag_concurrency_test.go     | 312 ++++++++++++++
+ registry/handlers/manifests.go                |  47 ++-
+ registry/handlers/tag_concurrency_test.go     | 312 ++++++++++++++++++++
  registry/storage/registry.go                  |  22 +-
- registry/storage/tagstore.go                  |  73 +++-
- registry/storage/tagstore_concurrency_test.go | 404 ++++++++++++++++++
- vendor.conf                                   |   1 +
- vendor/golang.org/x/sync/LICENSE              |  27 ++
- vendor/golang.org/x/sync/PATENTS              |  22 +
- vendor/golang.org/x/sync/README.md            |  20 +
- vendor/golang.org/x/sync/errgroup/errgroup.go | 132 ++++++
- vendor/golang.org/x/sync/errgroup/go120.go    |  14 +
- .../golang.org/x/sync/errgroup/pre_go120.go   |  15 +
- 16 files changed, 1125 insertions(+), 26 deletions(-)
- create mode 100644 registry/handlers/tag_concurrency_test.go
- create mode 100644 registry/storage/tagstore_concurrency_test.go
- create mode 100644 vendor/golang.org/x/sync/LICENSE
- create mode 100644 vendor/golang.org/x/sync/PATENTS
- create mode 100644 vendor/golang.org/x/sync/README.md
- create mode 100644 vendor/golang.org/x/sync/errgroup/errgroup.go
- create mode 100644 vendor/golang.org/x/sync/errgroup/go120.go
- create mode 100644 vendor/golang.org/x/sync/errgroup/pre_go120.go
+ registry/storage/tagstore.go                  |  73 +++--
+ registry/storage/tagstore_concurrency_test.go | 404 ++++++++++++++++++++++++++
+ 10 files changed, 895 insertions(+), 26 deletions(-)
 
 diff --git a/configuration/configuration.go b/configuration/configuration.go
-index c06aa21c..ae653000 100644
+index 4f33ec9..e6c5967 100644
 --- a/configuration/configuration.go
 +++ b/configuration/configuration.go
-@@ -438,6 +438,8 @@ func (storage Storage) Type() string {
+@@ -440,6 +440,8 @@ func (storage Storage) Type() string {
  			// allow configuration of delete
  		case "redirect":
  			// allow configuration of redirect
@@ -104,7 +90,7 @@ index c06aa21c..ae653000 100644
  		default:
  			storageType = append(storageType, k)
  		}
-@@ -451,6 +453,19 @@ func (storage Storage) Type() string {
+@@ -453,6 +455,19 @@ func (storage Storage) Type() string {
  	return ""
  }
  
@@ -124,7 +110,7 @@ index c06aa21c..ae653000 100644
  // Parameters returns the Parameters map for a Storage configuration
  func (storage Storage) Parameters() Parameters {
  	return storage[storage.Type()]
-@@ -479,6 +494,8 @@ func (storage *Storage) UnmarshalYAML(unmarshal func(interface{}) error) error {
+@@ -481,6 +496,8 @@ func (storage *Storage) UnmarshalYAML(unmarshal func(interface{}) error) error {
  					// allow configuration of delete
  				case "redirect":
  					// allow configuration of redirect
@@ -134,7 +120,7 @@ index c06aa21c..ae653000 100644
  					types = append(types, k)
  				}
 diff --git a/configuration/configuration_test.go b/configuration/configuration_test.go
-index 48cc9980..d0299ed1 100644
+index 48cc998..d0299ed 100644
 --- a/configuration/configuration_test.go
 +++ b/configuration/configuration_test.go
 @@ -43,6 +43,9 @@ var configStruct = Configuration{
@@ -167,7 +153,7 @@ index 48cc9980..d0299ed1 100644
  		Bugsnag:  BugsnagReporting{config.Reporting.Bugsnag.APIKey, config.Reporting.Bugsnag.ReleaseStage, config.Reporting.Bugsnag.Endpoint},
  		NewRelic: NewRelicReporting{config.Reporting.NewRelic.LicenseKey, config.Reporting.NewRelic.Name, config.Reporting.NewRelic.Verbose},
 diff --git a/docs/configuration.md b/docs/configuration.md
-index 75f52dea..348ac390 100644
+index 85d6bb6..5b8a492 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -152,6 +152,8 @@ storage:
@@ -206,8 +192,20 @@ index 75f52dea..348ac390 100644
  ### `redirect`
  
  The `redirect` subsection provides configuration for managing redirects from
+diff --git a/go.mod b/go.mod
+index 4e1b7f1..0250eed 100644
+--- a/go.mod
++++ b/go.mod
+@@ -25,6 +25,7 @@ require (
+ 	github.com/yvasiyarov/gorelic v0.0.7-0.20141212073537-a9bba5b9ab50
+ 	golang.org/x/crypto v0.55.0
+ 	golang.org/x/oauth2 v0.36.0
++	golang.org/x/sync v0.22.0
+ 	google.golang.org/api v0.0.0-20160322025152-9bf6e6e569ff
+ 	google.golang.org/cloud v0.0.0-20151119220103-975617b05ea8
+ 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
 diff --git a/registry/handlers/app.go b/registry/handlers/app.go
-index 45cf4906..fd0c4914 100644
+index dd10e5b..62c8fb2 100644
 --- a/registry/handlers/app.go
 +++ b/registry/handlers/app.go
 @@ -206,6 +206,21 @@ func NewApp(ctx context.Context, config *configuration.Configuration) *App {
@@ -233,7 +231,7 @@ index 45cf4906..fd0c4914 100644
  	var redirectDisabled bool
  	if redirectConfig, ok := config.Storage["redirect"]; ok {
 diff --git a/registry/handlers/manifests.go b/registry/handlers/manifests.go
-index 0d8b6588..6fddd11e 100644
+index 02233f3..1ac5aa9 100644
 --- a/registry/handlers/manifests.go
 +++ b/registry/handlers/manifests.go
 @@ -2,9 +2,11 @@ package handlers
@@ -318,7 +316,7 @@ index 0d8b6588..6fddd11e 100644
  	w.WriteHeader(http.StatusAccepted)
 diff --git a/registry/handlers/tag_concurrency_test.go b/registry/handlers/tag_concurrency_test.go
 new file mode 100644
-index 00000000..ada38ef0
+index 0000000..ada38ef
 --- /dev/null
 +++ b/registry/handlers/tag_concurrency_test.go
 @@ -0,0 +1,312 @@
@@ -635,7 +633,7 @@ index 00000000..ada38ef0
 +	}
 +}
 diff --git a/registry/storage/registry.go b/registry/storage/registry.go
-index 102abb6e..17b4cef4 100644
+index 102abb6..17b4cef 100644
 --- a/registry/storage/registry.go
 +++ b/registry/storage/registry.go
 @@ -3,6 +3,7 @@ package storage
@@ -697,7 +695,7 @@ index 102abb6e..17b4cef4 100644
  
  	return tags
 diff --git a/registry/storage/tagstore.go b/registry/storage/tagstore.go
-index a3c766b4..d412c2b7 100644
+index a3c766b..d412c2b 100644
 --- a/registry/storage/tagstore.go
 +++ b/registry/storage/tagstore.go
 @@ -3,10 +3,13 @@ package storage
@@ -804,7 +802,7 @@ index a3c766b4..d412c2b7 100644
  	return tags, nil
 diff --git a/registry/storage/tagstore_concurrency_test.go b/registry/storage/tagstore_concurrency_test.go
 new file mode 100644
-index 00000000..d64ee088
+index 0000000..d64ee08
 --- /dev/null
 +++ b/registry/storage/tagstore_concurrency_test.go
 @@ -0,0 +1,404 @@
@@ -1212,284 +1210,3 @@ index 00000000..d64ee088
 +		}
 +	})
 +}
-diff --git a/vendor.conf b/vendor.conf
-index 4316e785..226bdba8 100644
---- a/vendor.conf
-+++ b/vendor.conf
-@@ -41,6 +41,7 @@ golang.org/x/net b225e7ca6dde1ef5a5ae5ce922861bda011cfabd # v0.17.0
- golang.org/x/text f488e191e67ed95a5b9b7b39024e5a5f5f1ffd02 # v0.13.0
- golang.org/x/oauth2 045497edb6234273d67dbc25da3f2ddbc4c4cacf
- golang.org/x/time a4bde12657593d5e90d0533a3e4fd95e635124cb
-+golang.org/x/sync 93782cc822b6b554cb7df40332fd010f0473cbc8 # v0.3.0
- google.golang.org/api 9bf6e6e569ff057f75d9604a46c52928f17d2b54
- google.golang.org/appengine 12d5545dc1cfa6047a286d5e853841b6471f4c19
- google.golang.org/cloud 975617b05ea8a58727e6c1a06b6161ff4185a9f2
-diff --git a/vendor/golang.org/x/sync/LICENSE b/vendor/golang.org/x/sync/LICENSE
-new file mode 100644
-index 00000000..6a66aea5
---- /dev/null
-+++ b/vendor/golang.org/x/sync/LICENSE
-@@ -0,0 +1,27 @@
-+Copyright (c) 2009 The Go Authors. All rights reserved.
-+
-+Redistribution and use in source and binary forms, with or without
-+modification, are permitted provided that the following conditions are
-+met:
-+
-+   * Redistributions of source code must retain the above copyright
-+notice, this list of conditions and the following disclaimer.
-+   * Redistributions in binary form must reproduce the above
-+copyright notice, this list of conditions and the following disclaimer
-+in the documentation and/or other materials provided with the
-+distribution.
-+   * Neither the name of Google Inc. nor the names of its
-+contributors may be used to endorse or promote products derived from
-+this software without specific prior written permission.
-+
-+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-diff --git a/vendor/golang.org/x/sync/PATENTS b/vendor/golang.org/x/sync/PATENTS
-new file mode 100644
-index 00000000..73309904
---- /dev/null
-+++ b/vendor/golang.org/x/sync/PATENTS
-@@ -0,0 +1,22 @@
-+Additional IP Rights Grant (Patents)
-+
-+"This implementation" means the copyrightable works distributed by
-+Google as part of the Go project.
-+
-+Google hereby grants to You a perpetual, worldwide, non-exclusive,
-+no-charge, royalty-free, irrevocable (except as stated in this section)
-+patent license to make, have made, use, offer to sell, sell, import,
-+transfer and otherwise run, modify and propagate the contents of this
-+implementation of Go, where such license applies only to those patent
-+claims, both currently owned or controlled by Google and acquired in
-+the future, licensable by Google that are necessarily infringed by this
-+implementation of Go.  This grant does not include claims that would be
-+infringed only as a consequence of further modification of this
-+implementation.  If you or your agent or exclusive licensee institute or
-+order or agree to the institution of patent litigation against any
-+entity (including a cross-claim or counterclaim in a lawsuit) alleging
-+that this implementation of Go or any code incorporated within this
-+implementation of Go constitutes direct or contributory patent
-+infringement, or inducement of patent infringement, then any patent
-+rights granted to you under this License for this implementation of Go
-+shall terminate as of the date such litigation is filed.
-diff --git a/vendor/golang.org/x/sync/README.md b/vendor/golang.org/x/sync/README.md
-new file mode 100644
-index 00000000..7c1c8f6c
---- /dev/null
-+++ b/vendor/golang.org/x/sync/README.md
-@@ -0,0 +1,20 @@
-+# Go Sync
-+
-+[![Go Reference](https://pkg.go.dev/badge/golang.org/x/sync.svg)](https://pkg.go.dev/golang.org/x/sync)
-+
-+This repository provides Go concurrency primitives in addition to the
-+ones provided by the language and "sync" and "sync/atomic" packages.
-+
-+## Download/Install
-+
-+The easiest way to install is to run `go get -u golang.org/x/sync`. You can
-+also manually git clone the repository to `$GOPATH/src/golang.org/x/sync`.
-+
-+## Report Issues / Send Patches
-+
-+This repository uses Gerrit for code changes. To learn how to submit changes to
-+this repository, see https://golang.org/doc/contribute.html.
-+
-+The main issue tracker for the sync repository is located at
-+https://github.com/golang/go/issues. Prefix your issue with "x/sync:" in the
-+subject line, so it is easy to find.
-diff --git a/vendor/golang.org/x/sync/errgroup/errgroup.go b/vendor/golang.org/x/sync/errgroup/errgroup.go
-new file mode 100644
-index 00000000..b18efb74
---- /dev/null
-+++ b/vendor/golang.org/x/sync/errgroup/errgroup.go
-@@ -0,0 +1,132 @@
-+// Copyright 2016 The Go Authors. All rights reserved.
-+// Use of this source code is governed by a BSD-style
-+// license that can be found in the LICENSE file.
-+
-+// Package errgroup provides synchronization, error propagation, and Context
-+// cancelation for groups of goroutines working on subtasks of a common task.
-+package errgroup
-+
-+import (
-+	"context"
-+	"fmt"
-+	"sync"
-+)
-+
-+type token struct{}
-+
-+// A Group is a collection of goroutines working on subtasks that are part of
-+// the same overall task.
-+//
-+// A zero Group is valid, has no limit on the number of active goroutines,
-+// and does not cancel on error.
-+type Group struct {
-+	cancel func(error)
-+
-+	wg sync.WaitGroup
-+
-+	sem chan token
-+
-+	errOnce sync.Once
-+	err     error
-+}
-+
-+func (g *Group) done() {
-+	if g.sem != nil {
-+		<-g.sem
-+	}
-+	g.wg.Done()
-+}
-+
-+// WithContext returns a new Group and an associated Context derived from ctx.
-+//
-+// The derived Context is canceled the first time a function passed to Go
-+// returns a non-nil error or the first time Wait returns, whichever occurs
-+// first.
-+func WithContext(ctx context.Context) (*Group, context.Context) {
-+	ctx, cancel := withCancelCause(ctx)
-+	return &Group{cancel: cancel}, ctx
-+}
-+
-+// Wait blocks until all function calls from the Go method have returned, then
-+// returns the first non-nil error (if any) from them.
-+func (g *Group) Wait() error {
-+	g.wg.Wait()
-+	if g.cancel != nil {
-+		g.cancel(g.err)
-+	}
-+	return g.err
-+}
-+
-+// Go calls the given function in a new goroutine.
-+// It blocks until the new goroutine can be added without the number of
-+// active goroutines in the group exceeding the configured limit.
-+//
-+// The first call to return a non-nil error cancels the group's context, if the
-+// group was created by calling WithContext. The error will be returned by Wait.
-+func (g *Group) Go(f func() error) {
-+	if g.sem != nil {
-+		g.sem <- token{}
-+	}
-+
-+	g.wg.Add(1)
-+	go func() {
-+		defer g.done()
-+
-+		if err := f(); err != nil {
-+			g.errOnce.Do(func() {
-+				g.err = err
-+				if g.cancel != nil {
-+					g.cancel(g.err)
-+				}
-+			})
-+		}
-+	}()
-+}
-+
-+// TryGo calls the given function in a new goroutine only if the number of
-+// active goroutines in the group is currently below the configured limit.
-+//
-+// The return value reports whether the goroutine was started.
-+func (g *Group) TryGo(f func() error) bool {
-+	if g.sem != nil {
-+		select {
-+		case g.sem <- token{}:
-+			// Note: this allows barging iff channels in general allow barging.
-+		default:
-+			return false
-+		}
-+	}
-+
-+	g.wg.Add(1)
-+	go func() {
-+		defer g.done()
-+
-+		if err := f(); err != nil {
-+			g.errOnce.Do(func() {
-+				g.err = err
-+				if g.cancel != nil {
-+					g.cancel(g.err)
-+				}
-+			})
-+		}
-+	}()
-+	return true
-+}
-+
-+// SetLimit limits the number of active goroutines in this group to at most n.
-+// A negative value indicates no limit.
-+//
-+// Any subsequent call to the Go method will block until it can add an active
-+// goroutine without exceeding the configured limit.
-+//
-+// The limit must not be modified while any goroutines in the group are active.
-+func (g *Group) SetLimit(n int) {
-+	if n < 0 {
-+		g.sem = nil
-+		return
-+	}
-+	if len(g.sem) != 0 {
-+		panic(fmt.Errorf("errgroup: modify limit while %v goroutines in the group are still active", len(g.sem)))
-+	}
-+	g.sem = make(chan token, n)
-+}
-diff --git a/vendor/golang.org/x/sync/errgroup/go120.go b/vendor/golang.org/x/sync/errgroup/go120.go
-new file mode 100644
-index 00000000..7d419d37
---- /dev/null
-+++ b/vendor/golang.org/x/sync/errgroup/go120.go
-@@ -0,0 +1,14 @@
-+// Copyright 2023 The Go Authors. All rights reserved.
-+// Use of this source code is governed by a BSD-style
-+// license that can be found in the LICENSE file.
-+
-+//go:build go1.20
-+// +build go1.20
-+
-+package errgroup
-+
-+import "context"
-+
-+func withCancelCause(parent context.Context) (context.Context, func(error)) {
-+	return context.WithCancelCause(parent)
-+}
-diff --git a/vendor/golang.org/x/sync/errgroup/pre_go120.go b/vendor/golang.org/x/sync/errgroup/pre_go120.go
-new file mode 100644
-index 00000000..1795c18a
---- /dev/null
-+++ b/vendor/golang.org/x/sync/errgroup/pre_go120.go
-@@ -0,0 +1,15 @@
-+// Copyright 2023 The Go Authors. All rights reserved.
-+// Use of this source code is governed by a BSD-style
-+// license that can be found in the LICENSE file.
-+
-+//go:build !go1.20
-+// +build !go1.20
-+
-+package errgroup
-+
-+import "context"
-+
-+func withCancelCause(parent context.Context) (context.Context, func(error)) {
-+	ctx, cancel := context.WithCancel(parent)
-+	return ctx, func(error) { cancel() }
-+}
--- 
-2.43.0
-

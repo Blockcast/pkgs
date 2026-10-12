@@ -23,7 +23,7 @@ ARG TARGETARCH
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Same environment Harbor's make/photon/registry/Dockerfile.binary uses:
-# GOPATH-mode build (release/2.8 has no go.mod) with the vendored deps.
+# Harbor v2.15.4 uses the fork's Go module; dependencies are locked by go.sum.
 ENV DISTRIBUTION_DIR=/go/src/github.com/docker/distribution
 ENV BUILDTAGS="include_oss include_gcs"
 ENV GO111MODULE=auto
