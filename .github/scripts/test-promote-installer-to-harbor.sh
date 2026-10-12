@@ -123,6 +123,23 @@ expect_output "post-copy digest mismatch aborts" \
 # ...and the happy path still reaches the anonymous-pull proof.
 expect_output "verified copy proves anonymous pull" \
   'anonymous pull path verified' "$(run_promote 0 '' "$A")"
+# The step summary only runs under Actions, so the suite must set
+# GITHUB_STEP_SUMMARY or it never reaches that block -- which is how a format
+# string starting with '-' (parsed as an option by the printf builtin) failed a
+# promotion that had already succeeded. run_promote swallows the exit status, so
+# call the script directly to assert it.
+summary="$stub_dir/step-summary.md"
+summary_rc=0
+CRANE_STATE="$stub_dir/copied.$$.$RANDOM" \
+CRANE_SOURCE="$A" CRANE_LS_STATUS=0 \
+CRANE_DEST_BEFORE='' CRANE_DEST_AFTER="$A" \
+DOCKER_CONFIG="$stub_dir/auth" GITHUB_STEP_SUMMARY="$summary" \
+PATH="$stub_dir:$PATH" "$script" \
+  --source ghcr.io/blockcast/installer:v0.0.0-test \
+  --destination harbor.example.invalid/library/talos-installer >/dev/null 2>&1 \
+  || summary_rc=$?
+check "step summary run exits 0" 0 "$summary_rc"
+expect_output "step summary lists the source" '^- source: ' "$(cat "$summary" 2>/dev/null)"
 # guard 4 -- the anonymous resolve must actually be credential-free. Here the
 # authenticated path sees the copy and the anonymous one does not; only a check
 # that really drops the job's credentials notices.

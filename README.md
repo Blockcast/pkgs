@@ -4,9 +4,10 @@ Blockcast's Talos package and signed-installer build source. **Use `main` for
 new builds.** It consolidates the former `ci/talos-v1.14.0` production line
 with the build guards, Harbor promotion, and registry fixes maintained on main.
 
-The build pairing lives in `Pkgfile`: Talos **v1.14.0**, Linux **6.18.48**.
-Kernel dispatches derive their tag from that pairing. Installer dispatches
-require explicit matching inputs; for a ct6 base, pass the extension explicitly:
+The deployed pairing remains Talos **v1.14.0**, Linux **6.18.48**. This draft
+tracks the next upstream candidate, Linux **6.18.54**, in `Pkgfile`; it has not
+been built or deployed. Kernel dispatches derive their tag from that pairing.
+Installer dispatches require explicit matching inputs; for a ct6 base, pass the extension explicitly:
 `ghcr.io/blockcast/amt-kmod:v1.14.0`. Use fresh output tags for rebuilds;
 Harbor promotion refuses to overwrite an existing different digest by default.
 
@@ -27,10 +28,12 @@ That build published kernel digest
 `sha256:5017486d17b0667a2a00d9262cc34198045512cd97df29a0fe55d0557abf0623`.
 
 Upstream updates for this Talos minor come from `siderolabs/pkgs:release-1.14`.
-Upstream `main` is already on v1.15 development. The inspected release-1.14 tip
-`6c312e4b77817a9c1bd4975a532b3fd23d33430c` moves Linux to 6.18.54; that upgrade
-needs a matching AMT extension rebuild and a validated rollout. Keep it separate
-from this source consolidation so the deployed kernel pairing stays explicit.
+Upstream `main` is already on v1.15 development. This draft is based on
+`6c312e4b77817a9c1bd4975a532b3fd23d33430c` and carries its Linux 6.18.54
+package inputs and kernel config updates while retaining Blockcast's signing
+and multicast settings. It is intentionally blocked on a matching
+`linux-amt` extension rebuild and canary; merge or deployment must wait for
+that companion change to prove the new kernel/module ABI.
 
 ![Dependency Diagram](/deps.svg)
 
