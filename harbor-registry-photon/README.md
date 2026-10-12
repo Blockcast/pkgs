@@ -1,6 +1,6 @@
 # harbor-registry-photon: concurrent tag lookup
 
-`goharbor/registry-photon:v2.14.0` with one change: the registry binary
+`goharbor/registry-photon:v2.15.4` with one change: the registry binary
 (`/usr/bin/registry_DO_NOT_USE_GC`) is rebuilt from the exact
 `goharbor/distribution` revision Harbor ships, plus a backport of
 [distribution/distribution@a2afe23f38](https://github.com/distribution/distribution/commit/a2afe23f386e827d1975530aab12010f0be2a774)
@@ -8,7 +8,7 @@
 image — entrypoint, user, healthcheck, volumes, the other files — is the stock
 image, byte for byte.
 
-Published as `ghcr.io/blockcast/harbor-registry-photon:v2.14.0-taglookup.3`
+Published as `ghcr.io/blockcast/harbor-registry-photon:v2.15.4-taglookup.4`
 (`./build.sh --print-tag`). **Do not deploy `v2.14.0-taglookup.1` or `.2`.**
 Both were published before deviation 1 below was complete. With either, a
 manifest `DELETE` whose request is cancelled mid-cleanup leaves tags pointing
@@ -40,7 +40,7 @@ fix this.**
 ## What the patch does
 
 `patches/0001-*.patch`, against goharbor/distribution
-`0c62ec3ec8df7ea91c819448236a67f0777f929f`:
+`ac7c4cedc2f4d45347630beceaaa1639bb9c771a` (Harbor v2.15.4):
 
 - `tagStore.Lookup` reads tag links through an `errgroup` bounded by the tag
   store's concurrency limit. The first non-`PathNotFound` error cancels the
@@ -128,19 +128,19 @@ All inputs live in `release.env`; the Dockerfile has no defaults and
 | value | source |
 |---|---|
 | `BASE_IMAGE` digest | image of container `registry` in the live `harbor/harbor-registry` Deployment. Single-arch `linux/amd64` manifest → `PLATFORM=linux/amd64` |
-| `DISTRIBUTION_SHA` | the base binary's build info: `-X version.Revision=0c62ec3e…` |
-| `DISTRIBUTION_DESCRIBE` | the base binary's `--version`: `v2.8.3-23-g0c62ec3e` (checked against `git describe` during the build) |
-| `GOLANG_IMAGE` | the base binary's `go version -m`: `go1.24.6`, which is also Harbor v2.14.0's `GOBUILDIMAGE=golang:1.24.6`; pinned by index digest |
+| `DISTRIBUTION_SHA` | the base binary's build info: `-X version.Revision=ac7c4ced…` |
+| `DISTRIBUTION_DESCRIBE` | the base binary's `--version`: `v2.8.3-55-gac7c4ced` (checked against `git describe` during the build) |
+| `GOLANG_IMAGE` | the base binary's `go version -m`: `go1.26.7`, which is also Harbor v2.15.4's `GOBUILDIMAGE=golang:1.26.7`; pinned by index digest |
 | Dockerfile frontend (`# syntax=` line) | `docker/dockerfile:1.27.1@sha256:4edf897a…`: the digest the floating `docker/dockerfile:1` resolved to in PR #19's CI run (37225451364), which is also `1.27.1`'s. The frontend parses and runs the whole build, so it is pinned like a base image. It lives in the `Dockerfile`, not `release.env`, because BuildKit reads it before any build arg exists |
 
 The binary is built the way Harbor's `make/photon/registry/Dockerfile.binary`
-builds it — GOPATH mode, `CGO_ENABLED=0`, `BUILDTAGS="include_oss include_gcs"`,
+builds it — Go module mode, `CGO_ENABLED=0`, `BUILDTAGS="include_oss include_gcs"`,
 `make PREFIX=/go clean binaries` — with `VERSION` and `REVISION` overridden so
 it identifies itself:
 
 ```
 $ registry_DO_NOT_USE_GC --version
-/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-23-g0c62ec3e+blockcast-taglookup.3
+/usr/bin/registry_DO_NOT_USE_GC github.com/docker/distribution v2.8.3-55-gac7c4ced+blockcast-taglookup.4
 ```
 
 `REVISION` is `<DISTRIBUTION_SHA>+patch.sha256.<sha256 of the patch files>`.
@@ -175,13 +175,10 @@ summary. Deploy by that digest, not by tag.
    storage driver (`must provide exactly one storage type. Provided:
    [<driver> tag]`) and exits. With no `tag` key the patched binary uses
    `GOMAXPROCS`; the live pod has no CPU limit, so that is the node's CPU count.
-   **If a CPU limit is ever added to the registry pod, set
-   `storage.tag.concurrencylimit` explicitly at the same time.** The binary is
-   built with go1.24.6, whose `GOMAXPROCS` default is the host's CPU count and
-   ignores cgroup CPU limits (container-aware `GOMAXPROCS` arrived in go1.25),
-   and both bounds — tag lookup and untag (`storage.DefaultConcurrencyLimit`)
-   — are computed once at startup, so a CPU limit lowers neither. The untag
-   bound has no config key in upstream either.
+   Keep `storage.tag.concurrencylimit` explicit even though Go 1.26 now
+   accounts for cgroup CPU quotas: this registry currently has no CPU limit.
+   Both tag lookup and untag (`storage.DefaultConcurrencyLimit`) capture
+   their bounds once at startup; only tag lookup has a config override.
 2. Only once every `harbor-registry` replica runs the patched image, set
    `storage.tag.concurrencylimit` in the registry config if a bound other than
    `GOMAXPROCS` is wanted — derive it from what the RGW endpoint can absorb,
@@ -199,7 +196,8 @@ summary. Deploy by that digest, not by tag.
    `/usr/bin/registry_DO_NOT_USE_GC` gives the Go version and
    `-X version.Revision=<sha>`; `--version` gives the describe string. Update
    `BASE_IMAGE` (by digest), `DISTRIBUTION_SHA`, `DISTRIBUTION_DESCRIBE`,
-   `GOLANG_IMAGE` (by digest), `HARBOR_VERSION`; reset `PATCH_REVISION=1`.
+   `GOLANG_IMAGE` (by digest), `HARBOR_VERSION`; increment `PATCH_REVISION`
+   so the consumer's known-bad revision guard remains effective.
 2. Check whether that distribution revision already contains the fix: grep
    `registry/storage/tagstore.go` for `errgroup` / `concurrencyLimit`. If it
    does, retire this directory — that is the real exit.
