@@ -8,22 +8,9 @@
 # The image reference and every pin come from harbor-registry-photon/release.env;
 # nothing about the image is defined in this file.
 #
-# Runner: arc-dind, not `pkgs`. Org runner group `pkgs` has
-# allows_public_repositories=false and this repo is public, so `runs-on: pkgs`
-# jobs are accepted but never assigned a runner (BLO-37063, PR #18). arc-dind is
-# in the `default` group (public repos allowed) and ran this repo's
-# compose-signed-installer job on 2026-10-04. The build uses the job's own dind
-# daemon, so it does not depend on the in-cluster remote buildkit endpoints.
-#
-# Fork PRs: `check` only runs PRs whose head is in this repository, so this
-# workflow as written never sends a fork PR to the self-hosted, privileged
-# arc-dind runner, and only `publish` (main) gets packages: write. That `if:`
-# is NOT a security boundary: a pull_request run uses the workflow file from
-# the PR, so a fork can delete it, or add any workflow with runs-on: arc-dind.
-# The real control is the repo's fork-PR approval policy, which was
-# `first_time_contributors` on 2026-10-05 (a fork PR from anyone who has
-# contributed before runs without approval); `all_external_contributors`
-# closes that.
+# Runner: ubuntu-24.04. This build only needs Docker; use the repository
+# GitHub-hosted Linux pattern so releases do not wait for the cluster dind pool.
+# Only same-repository PRs run check, and only the main publisher has packages: write.
 
 name: harbor-registry-photon
 
@@ -61,7 +48,7 @@ jobs:
       (github.event_name == 'pull_request'
         && github.event.pull_request.head.repo.full_name == github.repository)
       || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
-    runs-on: arc-dind
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
@@ -94,7 +81,7 @@ jobs:
 
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: arc-dind
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
