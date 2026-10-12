@@ -14,8 +14,14 @@ permissions:
   pull-requests: read
 jobs:
   slack-notify:
-    runs-on:
-      group: generic
+    # BLO-40066: HAND-EDITED, kres emits `group: generic` -- see .kres.yaml entry 7.
+    # Identical defect to slack-notify-ci-failure.yaml: no runner group named
+    # `generic` exists in this org. Measured 2026-10-05 -- the last 30 runs of
+    # this workflow are 30/30 `failure`, each 1s with `runner_name: ""`, 0 steps
+    # and the annotation `Required runner group 'generic' not found`. #ci-all has
+    # been receiving nothing. The `workflow_run.workflows` list above is
+    # deliberately untouched.
+    runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion != 'skipped'
     steps:
       - name: Get PR number

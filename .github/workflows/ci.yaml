@@ -19,8 +19,8 @@ concurrency:
 # real harm it was doing.
 # Every function this workflow nominally provided is served elsewhere and
 # green: build-ct6-mroute-kernel.yml (production kernel), build-amt-installer
-# .yml + compose-signed-installer.yml (installer), weekly.yaml on pkgs-public
-# (reproducibility).
+# .yml + compose-signed-installer.yml (installer), weekly.yaml on GitHub-hosted
+# runners (reproducibility).
 # NOTE on what `workflow_dispatch` still reaches. This is the complete list,
 # step by step, because this comment is the restore-condition record:
 #   - The ungated setup steps (system info, checkout, unshallow, buildx setup)

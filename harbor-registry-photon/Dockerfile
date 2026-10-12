@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker.io/docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 # check=skip=InvalidDefaultArgInFrom
 #
 # Harbor registry-photon with distribution/distribution a2afe23f38 (concurrent,
@@ -23,7 +23,7 @@ ARG TARGETARCH
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Same environment Harbor's make/photon/registry/Dockerfile.binary uses:
-# GOPATH-mode build (release/2.8 has no go.mod) with the vendored deps.
+# Harbor v2.15.4 uses the fork's Go module; dependencies are locked by go.sum.
 ENV DISTRIBUTION_DIR=/go/src/github.com/docker/distribution
 ENV BUILDTAGS="include_oss include_gcs"
 ENV GO111MODULE=auto

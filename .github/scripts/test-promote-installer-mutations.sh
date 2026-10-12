@@ -97,16 +97,20 @@ open(path, "w").write(s.replace(old, 'anon_digest=$(crane digest', 1))
 PY
 assert_caught "anonymous-pull DOCKER_CONFIG override removed"
 
-# 5. The step summary's `printf --` -- drop it, so the '- '-prefixed format is
-#    parsed as an option and a successful promotion fails its own job.
+# 5. The `--` terminators in the run summary. Without them bash's printf parses
+#    the leading "-" of each bullet as an option and exits 2, which is the bug
+#    the first live installer-profile dispatch hit -- after the promotion, the
+#    digest equality and the anonymous pull had all succeeded.
 python3 - "$script" <<'PY'
 import sys
 path = sys.argv[1]
 s = open(path).read()
-old = "printf -- '- source:"
-assert old in s, "step summary printf -- not found -- update this mutation"
-open(path, "w").write(s.replace(old, "printf '- source:", 1))
+start = s.index("write_step_summary() {")
+end = s.index("# Sourced by the test for the function above")
+body = s[start:end]
+assert "printf -- " in body, "summary printf terminators not found -- update this mutation"
+open(path, "w").write(s[:start] + body.replace("printf -- ", "printf ") + s[end:])
 PY
-assert_caught "step summary printf -- removed"
+assert_caught "run-summary printf -- terminators removed"
 
 echo "all mutations caught"

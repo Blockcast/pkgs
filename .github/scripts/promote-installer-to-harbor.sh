@@ -37,7 +37,9 @@ set -euo pipefail
 # Split out as a pure function with no registry access so it can be exercised
 # directly -- see test-promote-installer-to-harbor.sh. A guard with no failing
 # mutation is a comment, and this one is the difference between re-publishing a
-# tag the fleet may already be pinned to and refusing to.
+# tag the runbook resolves digests through and refusing to. That read is
+# Blockcast/onprem-k8s .planning/2026-07-17-amt-6.18.38-secureboot-rollout-runbook.md
+# §1 -- re-verify there rather than re-deriving this premise (BLO-39281).
 #
 #   existing  destination digest, empty when the tag does not exist
 #   source    digest this run pushed
@@ -61,7 +63,8 @@ promotion_decision() {
     return 0
   fi
 
-  # Tag exists and means something else. A node may be pinned to it.
+  # Tag exists and means something else. The runbook resolves the digest it
+  # pins by reading this tag.
   if [[ "$overwrite" == true ]]; then
     echo copy
     return 0
@@ -69,6 +72,35 @@ promotion_decision() {
 
   echo refuse
   return 0
+}
+
+# The run summary a human reads to get the deploy command.
+#
+# A function, above the lib-only guard, so the test can run it. It used to be
+# an inline block at the bottom of the script, and in that position NOTHING
+# exercised it: the tests source this file with PROMOTE_INSTALLER_LIB_ONLY=1
+# and stop at the guard below, and the only other caller is a live
+# compose-signed-installer run with a Harbor credential. It shipped with
+# `printf '- source: ...'`, which bash's printf builtin parses as an OPTION
+# ("printf: - : invalid option", exit 2), so the first installer-profile
+# dispatch that ever reached it -- 2026-10-08, run 37753187708 -- failed the
+# step AFTER the promotion, the digest-equality assertion and the anonymous
+# pull had all succeeded. Hence the `--` terminators below, and hence this
+# being a function.
+write_step_summary() {
+  local source=$1 destination=$2 tag=$3 digest=$4 decision=$5
+
+  [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+
+  {
+    printf -- '### Harbor promotion\n\n'
+    printf -- '- source: `%s`\n' "$source"
+    printf -- '- destination: `%s:%s`\n' "$destination" "$tag"
+    printf -- '- digest: `%s` (%s)\n' "$digest" "$decision"
+    printf -- '- anonymous pull verified\n\n'
+    printf -- 'Deploy with:\n\n```\ntalosctl upgrade --image %s@%s\n```\n' \
+      "$destination" "$digest"
+  } >> "$GITHUB_STEP_SUMMARY"
 }
 
 # Sourced by the test for the function above; skip the side-effecting half.
@@ -137,9 +169,14 @@ EXISTING_DIGEST=$(crane digest "$DESTINATION:$TAG" 2>/dev/null) || {
     echo "so a first-ever promotion into a new repository also lands here). Neither" >&2
     echo "is safe to treat as an absent tag: in the first case that would overwrite" >&2
     echo "whatever is actually there. The push credential is HARBOR_USERNAME/HARBOR_PASSWORD" >&2
-    echo "in Blockcast/pkgs; it is proven to authenticate to registry.blockcast.net" >&2
-    echo "but its push scope to the 'library' project has not been established." >&2
-    echo "Route a named credential ask rather than widening any grant here." >&2
+    echo "in Blockcast/pkgs." >&2
+    echo "" >&2
+    echo "Tell the two causes apart WITHOUT writing anything: dispatch" >&2
+    echo "harbor-push-scope-preflight.yml in this repo. It asks Harbor for a push" >&2
+    echo "token and reports the scope actually granted, which separates 'the" >&2
+    echo "credential may not push here' from 'the repository does not exist yet'." >&2
+    echo "If it reports a scope problem, route a named credential ask rather than" >&2
+    echo "widening any grant here." >&2
     exit 1
   fi
 }
@@ -154,10 +191,11 @@ case "$DECISION" in
     echo "FATAL: $DESTINATION:$TAG already exists and points at a DIFFERENT image." >&2
     echo "  existing: $EXISTING_DIGEST" >&2
     echo "  source:   $SOURCE_DIGEST" >&2
-    echo "Data nodes pin install.image by digest, but the rollout runbook and the" >&2
-    echo "rollback path both name images by TAG, so repointing one silently changes" >&2
-    echo "what a documented rollback resolves to. Publish under a new tag, or pass" >&2
-    echo "--overwrite if repointing is genuinely intended." >&2
+    echo "Nodes already rolled are unaffected -- install.image is digest-pinned," >&2
+    echo "and the runbook's rollback names digests too. What breaks is the digest" >&2
+    echo "READ: the runbook resolves the digest it pins by reading this tag, so" >&2
+    echo "after a repoint it hands out this build for nodes rolled on the old one." >&2
+    echo "Publish under a new tag, or pass --overwrite if repointing is intended." >&2
     exit 1
     ;;
   copy)
@@ -195,15 +233,4 @@ if [[ "$anon_digest" != "$SOURCE_DIGEST" ]]; then
 fi
 echo "anonymous pull path verified: $DESTINATION:$TAG = $anon_digest"
 
-if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  # printf -- : a format string starting with '-' is parsed as an option by the bash builtin.
-  {
-    printf '### Harbor promotion\n\n'
-    printf -- '- source: `%s`\n' "$SOURCE"
-    printf -- '- destination: `%s:%s`\n' "$DESTINATION" "$TAG"
-    printf -- '- digest: `%s` (%s)\n' "$SOURCE_DIGEST" "$DECISION"
-    printf -- '- anonymous pull verified\n\n'
-    printf 'Deploy with:\n\n```\ntalosctl upgrade --image %s@%s\n```\n' \
-      "$DESTINATION" "$SOURCE_DIGEST"
-  } >> "$GITHUB_STEP_SUMMARY"
-fi
+write_step_summary "$SOURCE" "$DESTINATION" "$TAG" "$SOURCE_DIGEST" "$DECISION"

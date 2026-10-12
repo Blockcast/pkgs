@@ -58,6 +58,28 @@ PATTERN='(default:|:[-=?]|[A-Z_]+[:=]|[A-Za-z_]+=)[^#]*v?[0-9]+\.[0-9]+\.[0-9]+|
 # Alternate rather than reach for `CRANE_VER[A-Z_]*`: a prefix wildcard would
 # silently adopt any future name starting CRANE_VER, which is exactly the
 # undeliberate widening the paragraph above forbids.
+#
+# The same anchoring is needed on the *left*, and the filter below spells it
+# `(^|[^-.:=?A-Za-z0-9_])` rather than leaving the alternation bare.
+# Unanchored, a name merely *ending* in an entry was adopted as the pin --
+# `MY_CRANE_VER:` and `XCRANE_VERSION:` both went silently clean -- which is
+# the mirror image of the prefix wildcard this paragraph declines. `-` and `.`
+# are in the class because the names here are not only shell names: a shell
+# name is word characters only, but a YAML key may hold either, so
+# `FOO-CRANE_VER:` is a reachable name and `[^A-Za-z0-9_]` alone would still
+# adopt it. `:`, `=` and `?` are in it for the opposite reason -- they can
+# *terminate* a $PATTERN alternative, and the anchor eats the character it
+# matches; see the paragraph by the filter. One probe per character below,
+# same as the value class.
+#
+# The filter is token-scoped, not line-scoped: it redacts each pin *and its
+# value* and re-tests what is left, so a real literal sharing a physical line
+# with a pin still reds. A `grep -v` over the line dropped the whole line once
+# any entry appeared on it -- a fail-open, since the suppression was wider than
+# the thing it suppressed (BLO-40232). Nothing in .github wrote two assignments
+# on one line, so this was never live; pinned by a probe rather than left to be
+# rediscovered on a red build, which is how the dotted-quad limit above is
+# handled too.
 ALLOW='CRANE_VER|CRANE_VERSION'
 
 # A line that declares its literal is a fixture is exempt. Line-level, not
@@ -92,7 +114,105 @@ scan() {
   # dropped here.
   grep -rnE "$PATTERN" "$1" --exclude="$(basename "$0")" 2>/dev/null |
     grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
-    grep -vE "($ALLOW)[[:space:]]*[:=]" |
+    # Redact every $ALLOW pin and its value, then re-test the remainder against
+    # PATTERN. Dropping the whole line instead let a genuine literal ride along
+    # on a pin's line (BLO-40232). The value has to go with the name: strip
+    # `CRANE_VER=` alone and the bare `"v0.20.2"` left behind matches PATTERN's
+    # whole-line arm, so the pin would red itself.
+    #
+    # `[^[:space:],;&|{}]*` is the value: unquoted or quoted, both end at
+    # whitespace. The separator classes are the point -- bounding only at
+    # whitespace made the value greedy across any *other* separator, so
+    # `CRANE_VER=v0.20.2;TALOS=v1.13.4`, the `&&` form and the YAML flow
+    # mapping `{CRANE_VER: v0.20.2,TALOS: v1.13.4}` each redacted the real
+    # literal along with the pin and went silently clean: the same fail-open,
+    # one separator over, as the line-scoped `grep -v` this stage replaced
+    # (BLO-40232). A pin value contains none of these characters, so bounding
+    # at them costs nothing. The comma form happened to red anyway -- the
+    # greedy value stopped at the space before the second value, leaving it
+    # alone on the remainder for the whole-line arm -- but that rescue
+    # vanishes inside `{...}`, which is why it is not evidence of coverage.
+    #
+    # The set is "separators that are valid in YAML or in shell", which is the
+    # whole realistic surface: every form a pin and a literal can actually
+    # share a line in this repo routes through one of these six. It is not the
+    # set of all ASCII punctuation. `)`, `]` and `"` each still fail open --
+    # `(CRANE_VER=v0.20.2)TALOS=v1.13.4` reads clean -- but every shape that
+    # reaches them is neither valid YAML nor valid shell. Stated so the
+    # boundary is falsifiable: a counter-example that parses is a bug report.
+    #
+    # An *absent* value (a YAML key whose value is on the next line) redacts
+    # fine, but the continuation line carries no pin token at all, so
+    # redaction there is a no-op and the whole-line arm flags it: `CRANE_VER:`
+    # over two lines reds today. Loud, pre-existing, and $EXEMPT absorbs it.
+    #
+    # The match is greedy and could in principle eat a `#` and the comment
+    # after it, but PATTERN's `[^#]*` already refuses to look past a `#`, so
+    # nothing downstream reads what it ate.
+    #
+    # PATTERN arrives through the environment, not `-v`: `-v` runs escape
+    # processing over the value, and the three `\.` here are undefined escapes,
+    # which implementations are free to handle differently. ENVIRON does no
+    # processing at all, so the regex reaches awk byte-for-byte whatever awk
+    # this is. UNPINNED: mawk 1.3.4, the awk on this runner, passes `\.`
+    # through `-v` unchanged, so no probe below can tell the two apart here and
+    # reverting to `-v` is a surviving mutation. Kept because it costs one
+    # token and removes the question; not kept on the strength of a measured
+    # failure, which is why this says so rather than claiming a probe covers
+    # it (BLO-40232).
+    #
+    # The redact and the re-test both run on the *content*, with grep -rn's
+    # `path:line:` prefix stripped off first. PATTERN's whole-line arm is
+    # `^`-anchored, and against the prefixed string that anchor can never fire,
+    # so `v1.13.4 CRANE_VER: v0.20.2`
+    # would read clean. When the prefix will not parse -- `^[^:]*` cannot cross
+    # a colon in the path -- the line is kept rather than re-tested: a false
+    # positive is loud, and a guard that fails open is worse than no guard.
+    # That is the same trade, in the same direction, as the carve-out below.
+    # The claim is fail-closed, not total: a path containing `:<digits>:` makes
+    # the strip succeed on the *wrong* colon, leaving content the `^` arm can
+    # no longer match. Left to the comment rather than the code -- `a:12:b.yml`
+    # is absurd as a filename, and the narrower the path test the more ordinary
+    # paths it fails on.
+    #
+    # The `(^|[^-.:=?A-Za-z0-9_])` that anchors the name on the left is part of
+    # the match, so the gsub eats that one leading character along with the pin.
+    # That is why the strip has to run *first*: against the prefixed string the
+    # character before a column-0 pin is the `path:line:` prefix's own trailing
+    # colon, the gsub eats it, the strip then fails and the fail-closed arm reds
+    # a correct tool pin -- with a message telling the author to move it to
+    # Pkgfile, which is wrong advice for one. Stripping first also makes the `^`
+    # alternative mean what it reads as; against the prefix it could never fire.
+    # On the content the eaten character is always a separator -- a word
+    # character there is what the anchor refuses. Dropping one *can* turn a hit
+    # into a miss, which is why `:=?` are in the class alongside `-` and `.`.
+    # The earlier argument here reasoned about the character each $PATTERN
+    # alternative *opens* on; the eaten character is whatever immediately
+    # precedes an $ALLOW name, and that can just as well be an alternative's
+    # *trailing* separator -- `default:`, `[A-Z_]+[:=]` and `[A-Za-z_]+=` all
+    # end in one, and so does `:[-=?]`. Eating it deletes the marker and a real
+    # literal on the same line is then missed: `TALOS=CRANE_VER=v0.20.2
+    # v1.13.4` went clean while the pre-anchor guard red it (Ally, pkgs#30).
+    # So the class excludes every character that can *terminate* an
+    # alternative. Those shapes now match no pin at all, fall through to the
+    # whole-line re-test, and red -- fail-closed, the same direction as the
+    # unparseable-prefix arm above. One probe per character below.
+    # Still true and still measured: `${x:-v1.13.4}CRANE_VER=v0.20.2` reds (the
+    # `}` it eats terminates nothing), as does
+    # `A=${B:-v1.13.4} CRANE_VER=v0.20.2`, while the real pin
+    # `${CRANE_VER:-v0.20.2}` stays clean and
+    # `TALOS=v1.13.4,CRANE_VER=v0.20.2` loses the comma and still reds.
+    PAT="$PATTERN" AL="$ALLOW" awk '
+      BEGIN {
+        pat = ENVIRON["PAT"]
+        pin = "(^|[^-.:=?A-Za-z0-9_])(" ENVIRON["AL"] ")[[:space:]]*[:=][[:space:]]*[^[:space:],;&|{}]*"
+      }
+      {
+        rest = $0
+        if (!sub(/^[^:]*:[0-9]+:/, "", rest)) { print; next }
+        gsub(pin, "", rest)
+        if (rest ~ pat) print
+      }' |
     # "drop $EXEMPT lines unless they are a `default:`" needs a negative
     # lookahead, which ERE has not; awk is the one stage that can express it.
     # `grep .` is load-bearing -- awk always exits 0, and callers read scan's
@@ -181,11 +301,129 @@ self_test() {
 
   # False positives that would red the build on correct code.
   probe "tool pin left alone"     pass  '          CRANE_VER="v0.20.2"'
+  # The same pin unindented, which is the idiom in shell. Covers two things at
+  # once, both of which this guard got wrong before: the strip has to run
+  # before the gsub, or the character the left-anchor eats here is the
+  # `path:line:` prefix's own colon and a correct pin reds; and the `^`
+  # alternative in that anchor only reaches position 1 once the prefix is gone,
+  # so without this probe deleting `^|` is a surviving mutation.
+  probe "tool pin at column 0"    pass  'CRANE_VER=v0.20.2' c.sh
   # The same tool under its other live name. $ALLOW is anchored to the end of
   # the name, so this is NOT covered by the CRANE_VER entry -- it needs its own.
   # This reds if the CRANE_VERSION alternative is dropped, which is how the
   # guard went red on main 86s after it landed (BLO-39887).
   probe "tool pin, longer name"   pass  '          CRANE_VERSION: v0.21.2'
+  # ...and the other end of the same anchoring. A name that merely *ends* in an
+  # entry is not that tool's pin, so its value is a fleet literal and must red.
+  # Goes red if `(^|[^-.:=?A-Za-z0-9_])` is dropped from the pin regex: the bare
+  # alternation matches mid-name and the line is redacted away silently. The
+  # probe above is the positive control -- the real pins must stay quiet.
+  probe "name merely ending in a pin's name" catch \
+    '          MY_CRANE_VER: v1.13.4'
+  # A separator the left-anchor eats that terminates no $PATTERN alternative is
+  # not load-bearing: here it is the `}`, so the shell default keeps its colon
+  # and still reds with a real pin butted against it. (A separator that *does*
+  # terminate an alternative is load-bearing and is excluded from the anchor
+  # class -- see the three probes below.)
+  #
+  # Lowercase `x` is load-bearing: with `X` the leftover `X:` also matches the
+  # `[A-Z_]+[:=]` arm, so the probe would red for the wrong reason and stop
+  # isolating this one. As written it is the only probe that reds when
+  # `:[-=?]` is dropped from $PATTERN -- that arm was carrying no probe at all
+  # before this, i.e. it was a surviving mutation in the suite.
+  probe "separator eaten next to a colon arm" catch \
+    '${x:-v1.13.4}CRANE_VER=v0.20.2' c.sh
+  # The two non-word name characters, one probe each: a YAML key may hold `-`
+  # or `.` where a shell name may not, so leaving either out of the anchor
+  # class re-opens the miss above for that character alone.
+  probe "hyphenated name ending in a pin's name" catch \
+    '          FOO-CRANE_VER: v1.13.4'
+  probe "dotted name ending in a pin's name" catch \
+    '          foo.CRANE_VER: v1.13.4'
+  # The three separators that can *terminate* a $PATTERN alternative, one probe
+  # each for the same reason. These are the other direction: not a name that
+  # over-matches $ALLOW, but a marker whose own trailing separator the anchor
+  # would eat, deleting the marker and missing the literal beside it. Each is
+  # clean at pkgs#30's first head and reds once its character joins the class,
+  # so dropping any one of `:`, `=`, `?` on its own is caught here.
+  probe "eaten separator is an equals marker's own" catch \
+    'TALOS=CRANE_VER=v0.20.2 v1.13.4' c.sh
+  probe "eaten separator is a colon marker's own"  catch \
+    'TALOS:CRANE_VER=v0.20.2 v1.13.4' c.sh
+  probe "eaten separator closes the colon arm"     catch \
+    ':?CRANE_VER=v0.20.2 v1.13.4' c.sh
+  # BLO-40232: the pin is scoped to its own token, so a real literal sharing
+  # the line still reds. Goes red if the redact-and-re-test awk is reverted to
+  # a `grep -v` over the line -- the fail-open this probe exists for. The
+  # `env:` probe above is the positive control for it: `TALOS: v1.13.4` alone
+  # was already caught, so a pass here is scoping and not blanket suppression.
+  probe "literal riding on a pin's line" catch \
+    '          CRANE_VER: v0.20.2 TALOS: v1.13.4'
+  # ...and the pin itself is still not the thing reported. Both orders, because
+  # the redaction is a gsub over the line and must not depend on which comes
+  # first. Goes red if the value stops being redacted with the name: the bare
+  # `v0.20.2` left behind is a whole-line-arm hit all by itself.
+  probe "pin after the literal still reds" catch \
+    '          TALOS: v1.13.4 CRANE_VER: v0.20.2'
+  probe "two pins on one line stay quiet" pass \
+    '          CRANE_VER=v0.20.2 CRANE_VERSION=v0.21.2' c.sh
+  # The pin's *value* is bounded at the separators a version cannot contain,
+  # not just at whitespace. One probe per *character*, not per family: measured
+  # per-character, a probe only ever pins the one separator it actually
+  # contains, so the two-probe "covers `{`/`,`/`}` and `;`/`&`/`|`" split this
+  # replaces left four of the six free -- dropping `&`, `|`, `{` or `}` alone,
+  # or narrowing the whole class to `[^[:space:],;]*`, was 36/36 green while
+  # the `&&` and `|` forms went silently clean again. Each probe below reds
+  # when its own character is dropped from the class, and nothing else does.
+  # The first four shapes are the realistic ones and all four were silently
+  # clean before BLO-40232's second pass: the greedy value swallowed the
+  # separator and the real literal with it.
+  probe "literal after a pin in a flow mapping" catch \
+    '      env: {CRANE_VER: v0.20.2,TALOS: v1.13.4}'
+  probe "literal after a pin past a shell separator" catch \
+    '          CRANE_VER=v0.20.2;TALOS=v1.13.4' c.sh
+  probe "literal after a pin past &&" catch \
+    '          CRANE_VER=v0.20.2&&TALOS=v1.13.4' c.sh
+  probe "literal after a pin past a pipe" catch \
+    '          CRANE_VER=v0.20.2|TALOS=v1.13.4' c.sh
+  # The last two are the *only* shapes that pin `{` and `}`: a brace has to
+  # fall immediately after a value to bound it, which rules out the flow
+  # mapping above (its `{` sits before the pin name, and in `v0.20.2{x}` the
+  # `}` bounds first). Both are shell, and both are legal-but-unidiomatic
+  # there -- measured, `sh -n` accepts each as a single assignment word. The
+  # close-brace fixture was written as YAML (`{CRANE_VER: v0.20.2}TALOS:
+  # v1.13.4`) and is *not* valid YAML -- go-yaml (yq v4.44.3) rejects it with
+  # "did not find expected key", trailing content after a flow mapping -- so
+  # the claim and the fixture disagreed. Moved to shell rather than softened in
+  # prose: the
+  # shape still pins `}`, and now the one word covering both halves is one
+  # that was measured for both. Kept as probes rather than as an UNPINNED note
+  # because a one-line fixture that reds is cheaper than a paragraph claiming
+  # the character is unreachable -- which is what the per-character sweep
+  # above disproved.
+  probe "literal after a pin past an open brace" catch \
+    '          CRANE_VER=v0.20.2{TALOS=v1.13.4' c.sh
+  probe "literal after a pin past a close brace" catch \
+    '          CRANE_VER=v0.20.2}TALOS=v1.13.4' c.sh
+  # The re-test has to see the content, not grep -rn's `path:line:` prefix.
+  # This line's literal is caught only by PATTERN's `^`-anchored whole-line
+  # arm, so it is the one shape that needs the prefix stripped off first. Goes
+  # red if `sub(/^[^:]*:[0-9]+:/, ...)` is dropped from the re-test.
+  probe "literal at line start, pin after it" catch \
+    '      v1.13.4 CRANE_VER: v0.20.2'
+  # ...and when the prefix cannot be found at all, the line is kept. Same path
+  # shape as the exemption probe further down, but with a pin on the line, so
+  # it reaches this stage's fail-closed arm instead. Goes red if the strip is
+  # made unconditional: the `^` arm then never fires and the literal is waved
+  # through silently, which is the one direction this guard must not fail in.
+  probe "colon in the path keeps a pin line" catch \
+    '      v1.13.4 CRANE_VER: v0.20.2' 'a:b.yml'
+  # The remainder is re-tested against PATTERN verbatim, so a dotted-looking
+  # non-version on a pin line must stay quiet. This does NOT pin the ENVIRON
+  # choice: under mawk, `-v` delivers `\.` unchanged and this still passes.
+  # See the UNPINNED note at the awk stage.
+  probe "pin line with a non-version dotted-looking value" pass \
+    '          CRANE_VER: v0.20.2 FOO=1x2x3' c.sh
 
   # Pins the BLO-39887 design decision: widening the equals arm to take a colon
   # too reds all 30 of these. If someone does, this goes red first.

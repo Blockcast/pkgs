@@ -1,0 +1,85 @@
+# BLO-39281. Fails when a ref that just dispatched compose-signed-installer does
+# not carry the Harbor promotion -- see .github/scripts/check-installer-promotion-drift.sh
+# for why porting alone is not a fix for that.
+#
+# `workflow_run` is the mechanism, not a detail: GitHub always runs a
+# workflow_run-triggered workflow from the DEFAULT branch, whatever ref the
+# triggering run was on. A stale build branch therefore cannot opt out of this
+# check the way it opts out of the promotion itself -- by simply predating it.
+#
+# Detection, not prevention, and deliberately so: the dispatched ref supplies
+# its own workflow definition, so nothing on main can make that ref mirror. What
+# this buys is that the gap is named on the first dispatch of a new build line
+# rather than discovered when a node fails to pull.
+name: check-installer-promotion-drift
+
+on:
+  workflow_run:
+    workflows: [compose-signed-installer]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    # main IS the canonical copy; it cannot drift from itself.
+    if: github.event.workflow_run.head_branch != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the canonical copy
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Fetch the dispatched ref's copies
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ref"
+          for path in \
+            .github/workflows/compose-signed-installer.yml \
+            .github/scripts/promote-installer-to-harbor.sh
+          do
+            out="$RUNNER_TEMP/ref/$(basename "$path")"
+            # Only a 404 means "this ref carries nothing", and only that case
+            # becomes the empty file the guard reads as a gap. Any other status
+            # (403/rate limit, 5xx) is "I could not fetch it": fail the step on
+            # its own terms with exit 2, so a throttled run never reports a
+            # definite finding about the branch. Either way the run is red;
+            # "I could not fetch it" must never read as "it is fine". curl
+            # rather than gh api, because the HTTP status is what decides, and
+            # gh api reports every HTTP error as the same exit 1. A transport
+            # failure exits curl non-zero, which set -e already reports.
+            code=$(curl -sS -o "$out" -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$path?ref=$REF")
+            case "$code" in
+              200) ;;
+              404) : > "$out" ;;
+              *)
+                echo "::error::could not fetch $path at $REF: HTTP $code. This is a fetch failure, not a finding about the branch." >&2
+                exit 2
+                ;;
+            esac
+          done
+
+      - name: The dispatched ref carries the Harbor promotion
+        env:
+          # Through the environment, not ${{ }} interpolation: a git ref may
+          # contain `;`, `$` and backticks, so interpolating it into a run
+          # block is a script-injection sink.
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          echo "triggering run: $RUN_URL"
+          .github/scripts/check-installer-promotion-drift.sh \
+            "$RUNNER_TEMP/ref/compose-signed-installer.yml" \
+            "$RUNNER_TEMP/ref/promote-installer-to-harbor.sh" \
+            .github/scripts/promote-installer-to-harbor.sh \
+            "$BRANCH"
