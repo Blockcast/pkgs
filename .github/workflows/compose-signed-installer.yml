@@ -48,7 +48,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   compose:
-    runs-on: chromium-build
+    runs-on: arc-dind
     timeout-minutes: 30
     permissions:
       contents: read
