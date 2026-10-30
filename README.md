@@ -5,7 +5,8 @@ new builds.** It consolidates the former `ci/talos-v1.14.0` production line
 with the build guards, Harbor promotion, and registry fixes maintained on main.
 
 The deployed pairing remains Talos **v1.14.0**, Linux **6.18.48**. This draft
-tracks the next upstream candidate, Linux **6.18.54**, in `Pkgfile`; it has not
+tracks Linux **6.18.60** (CVE-2026-98432 fix, stable backport a47406c769f7 of
+upstream e3f33b0a1d89, first in 6.18.56; BLO-50264) in `Pkgfile`; it has not
 been built or deployed. Kernel dispatches derive their tag from that pairing.
 Installer dispatches require explicit matching inputs; for a ct6 base, pass the extension explicitly:
 `ghcr.io/blockcast/amt-kmod:v1.14.0`. Use fresh output tags for rebuilds;
