@@ -86,7 +86,7 @@ jobs:
           echo "image_tag=$INSTALLER_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout siderolabs/talos @ tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: siderolabs/talos
           ref: ${{ steps.p.outputs.talos }}
