@@ -15,15 +15,14 @@ concurrency:
 
 jobs:
   build:
-    # Public Blockcast/pkgs cannot use the private privileged DinD pool.
-    # GitHub-hosted Ubuntu provides the Docker daemon needed by Buildx.
+    # Use the on-prem self-hosted Docker runner pool; arc-dind is retired.
     # arc-chromium-build was deleted by onprem-k8s#4510 (merged 2026-10-03), after linux-amt#254
     # moved that repo's kernel builds here. Blockcast/pkgs was not in #4457's
     # consumer inventory, so these three workflows kept pointing at a label with
     # zero registered runners and queued forever (BLO-40510). arc-linux-amt-dind gives a
     # local privileged dockerd on the same DOCKER_HOST, which is all the "Resolve
     # dind socket" step below needs.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, large]
     timeout-minutes: 600  # BLO-50264: tools-pool dind is capped at 4 CPUs; a 6.18.60 build overran 350m there
     permissions:
       contents: read

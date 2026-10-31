@@ -39,8 +39,8 @@ concurrency:
 
 jobs:
   installer:
-    # Use GitHub-hosted Ubuntu; arc-dind is retired.
-    runs-on: ubuntu-24.04
+    # Use the on-prem self-hosted Docker runner pool; arc-dind is retired.
+    runs-on: [self-hosted, large]
     timeout-minutes: 180
     permissions:
       contents: read
