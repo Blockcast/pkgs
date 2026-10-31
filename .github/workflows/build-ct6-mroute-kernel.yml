@@ -15,15 +15,16 @@ concurrency:
 
 jobs:
   build:
-    # RUNNER: arc-dind, not the retired chromium-build pool. arc-chromium-build
-    # was deleted by onprem-k8s#4510 (merged 2026-10-03), after linux-amt#254
+    # RUNNER: arc-linux-amt-dind, not the retired arc-dind/chromium-build pools.
+    # arc-linux-amt-dind provides the privileged Docker daemon required here;
+    # arc-dind was retired and is intentionally scaled to zero.
+    # arc-chromium-build was deleted by onprem-k8s#4510 (merged 2026-10-03), after linux-amt#254
     # moved that repo's kernel builds here. Blockcast/pkgs was not in #4457's
     # consumer inventory, so these three workflows kept pointing at a label with
-    # zero registered runners and queued forever (BLO-40510). arc-dind gives a
+    # zero registered runners and queued forever (BLO-40510). arc-linux-amt-dind gives a
     # local privileged dockerd on the same DOCKER_HOST, which is all the "Resolve
-    # dind socket" step below needs, and this repo already reaches it:
-    # harbor-registry-photon.yaml runs there, group `default`.
-    runs-on: arc-dind
+    # dind socket" step below needs.
+    runs-on: arc-linux-amt-dind
     timeout-minutes: 600  # BLO-50264: tools-pool dind is capped at 4 CPUs; a 6.18.60 build overran 350m there
     permissions:
       contents: read
