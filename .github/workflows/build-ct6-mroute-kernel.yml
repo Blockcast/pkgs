@@ -24,7 +24,7 @@ jobs:
     # dind socket" step below needs, and this repo already reaches it:
     # harbor-registry-photon.yaml runs there, group `default`.
     runs-on: arc-dind
-    timeout-minutes: 350
+    timeout-minutes: 600  # BLO-50264: tools-pool dind is capped at 4 CPUs; a 6.18.60 build overran 350m there
     permissions:
       contents: read
       packages: write
