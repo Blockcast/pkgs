@@ -10,10 +10,9 @@ on:
       - main
 jobs:
   check:
-    # Deliberately NOT the self-hosted `pkgs` label: that queue is shared with
-    # the kernel builds, where a `default` run can sit ~2h. A guard that reports
-    # after the review is over is not a guard. These steps are checkout + shell.
-    runs-on: ubuntu-latest
+    # Keep this off the private `pkgs` queue: it is shared with kernel builds.
+    # These checkout + shell steps fit the public ARC light pool.
+    runs-on: arc-light
     timeout-minutes: 10
     permissions:
       contents: read
