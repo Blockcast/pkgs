@@ -9,7 +9,7 @@
 #
 # Pure bash against a stubbed `crane` -- no registry, no credential, no network.
 #
-# Shell-only tests run on the public ARC light pool; no cluster access is needed.
+# Shell-only tests run on a GitHub-hosted runner; no cluster access is needed.
 name: check-promote-installer-to-harbor
 
 on:
@@ -55,7 +55,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: arc-light
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
