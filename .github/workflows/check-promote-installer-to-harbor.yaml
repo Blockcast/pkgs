@@ -25,6 +25,8 @@ on:
       - .github/scripts/test-installer-promotion-drift.sh
       - .github/scripts/test-installer-promotion-mutations.sh
       - .github/scripts/test-compose-output.py
+      - .github/scripts/assert-installer-content.py
+      - .github/scripts/test-assert-installer-content.py
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
       - .github/workflows/harbor-push-scope-preflight.yml
@@ -45,6 +47,8 @@ on:
       - .github/scripts/test-installer-promotion-drift.sh
       - .github/scripts/test-installer-promotion-mutations.sh
       - .github/scripts/test-compose-output.py
+      - .github/scripts/assert-installer-content.py
+      - .github/scripts/test-assert-installer-content.py
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
       - .github/workflows/harbor-push-scope-preflight.yml
@@ -68,6 +72,9 @@ jobs:
 
       - name: Compose output reaches Harbor
         run: python3 .github/scripts/test-compose-output.py
+
+      - name: Installer content assertion readers (BLO-51197)
+        run: python3 .github/scripts/test-assert-installer-content.py
 
       # A guard with no failing mutation is a comment. This removes each guard
       # in turn and requires the suite above to go red, so a guard cannot be
