@@ -35,6 +35,13 @@ on:
         description: 'Output ref; empty derives <base_installer>-signed'
         default: ''
         type: string
+      kernel_release:
+        description: >-
+          Expected kernel release, e.g. 6.18.60-talos. Optional: the release is
+          always read from the extension's amt.ko vermagic and the installer's
+          UKI; when set, both must also equal this.
+        default: ''
+        type: string
       overwrite_harbor_tag:
         description: >-
           Repoint an EXISTING harbor.blockcast.net/library/talos-installer tag at
@@ -94,6 +101,7 @@ jobs:
           IMAGER: ${{ inputs.imager_image }}
           EXT: ${{ inputs.extension }}
           OUT: ${{ inputs.out_tag }}
+          KREL: ${{ inputs.kernel_release }}
           TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM }}
           TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM }}
           TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM }}
@@ -223,6 +231,31 @@ jobs:
           grep -q 'signing systemd-boot' "$compose_log"
 
           test -f _out/installer-amd64-secureboot.tar
+
+          # CONTENT ASSERTION, before anything is tagged or pushed (BLO-51197).
+          # Everything above passes on an installer that composed without
+          # amt-kmod, or around a kernel amt.ko was not built for (BLO-33819).
+          # linux-amt's copy of this check ran only on its stock-imager compose,
+          # which cannot build 6.18.60 (linux-amt#417), so this is the only place
+          # it runs on a deployable installer. Expected release = the extension's
+          # amt.ko vermagic (and KREL when given); checked against the UKI's
+          # .linux and the composed modules.dep. The extension is read with the
+          # same pull credential the imager used, and the imager supplies unzstd,
+          # so no new runner dependency.
+          ext_tar="$RUNNER_TEMP/amt-kmod-extension.tar"
+          docker --config "$imager_cfg" pull -q --platform linux/amd64 "$EXT"
+          ext_ctr="$(docker create --platform linux/amd64 "$EXT" /none)"
+          docker export "$ext_ctr" > "$ext_tar"
+          docker rm -f "$ext_ctr" >/dev/null
+          krel_args=()
+          if [ -n "${KREL:-}" ]; then krel_args=(--expect-krel "$KREL"); fi
+          python3 .github/scripts/assert-installer-content.py \
+            _out/installer-amd64-secureboot.tar \
+            --expect-extension amt-kmod \
+            --extension-tar "$ext_tar" \
+            "${krel_args[@]}" \
+            --zstd-cmd "docker run --rm -i --entrypoint /usr/bin/unzstd $IMAGER -c"
+
           LOADED="$(docker load -i _out/installer-amd64-secureboot.tar | sed -n -e 's/^Loaded image: //p' -e 's/^Loaded image ID: //p' | head -1)"
           test -n "$LOADED" || { echo "docker load produced no image" >&2; exit 1; }
           echo "composed SecureBoot installer loaded as: ${LOADED}"
