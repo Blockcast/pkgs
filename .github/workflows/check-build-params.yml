@@ -10,9 +10,9 @@ on:
       - main
 jobs:
   check:
-    # Keep this off the private `pkgs` queue: it is shared with kernel builds.
-    # These checkout + shell steps fit the shared ARC default pool.
-    runs-on: arc-default
+    # Fork PRs execute untrusted checkout code on a disposable GitHub VM.
+    # Same-repository PRs and pushes use the shared ARC default pool.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-default' }}
     timeout-minutes: 10
     permissions:
       contents: read

@@ -9,7 +9,8 @@
 #
 # Pure bash against a stubbed `crane` -- no registry, no credential, no network.
 #
-# Shell-only tests run on the shared ARC default pool; no cluster access is needed.
+# Same-repository shell-only tests run on the shared ARC default pool. Fork PRs
+# stay on disposable GitHub-hosted VMs because they execute the fork checkout.
 name: check-promote-installer-to-harbor
 
 on:
@@ -55,7 +56,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: arc-default
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-default' }}
     timeout-minutes: 10
     steps:
       - name: Checkout
