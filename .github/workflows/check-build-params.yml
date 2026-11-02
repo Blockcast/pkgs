@@ -11,8 +11,8 @@ on:
 jobs:
   check:
     # Keep this off the private `pkgs` queue: it is shared with kernel builds.
-    # These checkout + shell steps fit a GitHub-hosted runner.
-    runs-on: ubuntu-latest
+    # These checkout + shell steps fit the shared ARC default pool.
+    runs-on: arc-default
     timeout-minutes: 10
     permissions:
       contents: read
