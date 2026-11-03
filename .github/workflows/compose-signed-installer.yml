@@ -51,6 +51,13 @@ on:
           and needs no flag.
         default: false
         type: boolean
+      verify_only:
+        description: >-
+          Compose and run every check, then stop before tagging, pushing or
+          promoting anything. For proving the content assertion green at a
+          PR head without publishing an installer.
+        default: false
+        type: boolean
 concurrency:
   group: compose-signed-installer-${{ github.ref }}
   cancel-in-progress: false
@@ -256,6 +263,11 @@ jobs:
             "${krel_args[@]}" \
             --zstd-cmd "docker run --rm -i --entrypoint /usr/bin/unzstd $IMAGER -c"
 
+          if [ "${{ inputs.verify_only }}" = true ]; then
+            echo "verify_only: all checks passed; nothing tagged, pushed or promoted"
+            exit 0
+          fi
+
           LOADED="$(docker load -i _out/installer-amd64-secureboot.tar | sed -n -e 's/^Loaded image: //p' -e 's/^Loaded image ID: //p' | head -1)"
           test -n "$LOADED" || { echo "docker load produced no image" >&2; exit 1; }
           echo "composed SecureBoot installer loaded as: ${LOADED}"
@@ -280,6 +292,7 @@ jobs:
       # silently skipped promotion is indistinguishable from a successful one
       # right up to the moment a node tries to pull.
       - name: Install pinned crane
+        if: ${{ !inputs.verify_only }}
         env:
           CRANE_VERSION: v0.21.2
           CRANE_ARCHIVE_SHA256: 897e7c342db072ba76531246fc18fbf3e8e298688b6ecf98916770984b263866
@@ -294,6 +307,7 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Promote the signed installer into Harbor
+        if: ${{ !inputs.verify_only }}
         env:
           OUT: ${{ steps.compose.outputs.out }}
           OVERWRITE: ${{ inputs.overwrite_harbor_tag }}
