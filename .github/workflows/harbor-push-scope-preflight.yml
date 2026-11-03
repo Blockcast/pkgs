@@ -38,9 +38,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout canonical script
-        # The Harbor credentials are secrets; pin the checkout to the default
-        # branch before running on shared ARC so a manual dispatch cannot run
-        # arbitrary branch code with them.
+        # The Harbor credentials are secrets; pin the script checkout to the
+        # default branch as defense-in-depth against branch-only script edits.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -49,6 +48,9 @@ jobs:
       # Inputs reach the script through env, never interpolated into the shell
       # body: `${{ }}` is substituted before bash parses the line, so a quote
       # in an input would otherwise be executable text.
+      - name: Record checked-out script revision
+        run: git rev-parse HEAD
+
       - name: Probe Harbor push scope
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}

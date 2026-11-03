@@ -8,8 +8,8 @@
 # The image reference and every pin come from harbor-registry-photon/release.env;
 # nothing about the image is defined in this file.
 #
-# Runner: ubuntu-24.04. This build only needs Docker; use the repository
-# GitHub-hosted Linux pattern so releases do not wait for the cluster dind pool.
+# Runner: on-prem ARC DinD. Both jobs are trusted (same-repository checks or
+# main-only publishing) and use the cluster's Docker daemon.
 # Only same-repository PRs run check, and only the main publisher has packages: write.
 
 name: harbor-registry-photon
