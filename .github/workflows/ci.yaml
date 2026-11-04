@@ -19,8 +19,8 @@ concurrency:
 # real harm it was doing.
 # Every function this workflow nominally provided is served elsewhere and
 # green: build-ct6-mroute-kernel.yml (production kernel), build-amt-installer
-# .yml + compose-signed-installer.yml (installer), weekly.yaml on GitHub-hosted
-# runners (reproducibility).
+# .yml + compose-signed-installer.yml (installer), weekly.yaml on the tools ARC
+# pool (reproducibility).
 # NOTE on what `workflow_dispatch` still reaches. This is the complete list,
 # step by step, because this comment is the restore-condition record:
 #   - The ungated setup steps (system info, checkout, unshallow, buildx setup)
@@ -48,7 +48,7 @@ concurrency:
 # record, so it has to be true in advance.)
 # Restore the triggers only together with a runner route that can actually be
 # assigned -- see BLO-37063 for why routes via runner groups 6/14/20/22 are
-# closed and why ubuntu-latest is structurally impossible (the buildx step is
+# closed and why the old hosted route was structurally impossible (the buildx step is
 # driver: remote against cluster-internal DNS).
 "on":
   workflow_dispatch: {}

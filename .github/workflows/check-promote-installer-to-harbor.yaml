@@ -56,7 +56,9 @@ permissions:
 
 jobs:
   check:
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-default' }}
+    runs-on:
+      group: default-tools
+      labels: arc-light
     timeout-minutes: 10
     steps:
       - name: Checkout
