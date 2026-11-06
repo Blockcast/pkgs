@@ -184,7 +184,10 @@ jobs:
           test -S "$sock" || { echo "docker socket not found at '$sock' (DOCKER_HOST=${DOCKER_HOST:-})" >&2; exit 1; }
 
           imager_cfg="$RUNNER_TEMP/imager-docker"
-          secureboot_dir="$(mktemp -d /dev/shm/talos-secureboot.XXXXXX 2>/dev/null || mktemp -d)"
+          # BLO-54097 one-off: on arc-default the dockerd is a dind sidecar that
+          # does not share the runner's /dev/shm, so the imager saw an empty
+          # /secureboot. RUNNER_TEMP is on the shared work volume.
+          secureboot_dir="$(mktemp -d "$RUNNER_TEMP/talos-secureboot.XXXXXX")"
           trap 'rm -rf "$imager_cfg" "$secureboot_dir"' EXIT
 
           mkdir -p "$imager_cfg"
