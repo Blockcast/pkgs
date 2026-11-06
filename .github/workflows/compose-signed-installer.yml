@@ -71,9 +71,8 @@ jobs:
     # `default-tools` group with the `arc-dind` label gives a local privileged
     # dockerd on the same DOCKER_HOST, which is all the "Resolve dind socket"
     # step below needs.
-    runs-on:
-      group: default-tools
-      labels: arc-dind
+    # BLO-54097 one-off: tools arc-dind queued for hours on 2026-11-06.
+    runs-on: [self-hosted, large]
     timeout-minutes: 30
     permissions:
       contents: read
