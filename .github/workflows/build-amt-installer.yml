@@ -159,6 +159,14 @@ jobs:
             | sed 's/^/  kept (not in paired ref): /'
           git --no-pager diff --stat hack/modules-amd64.txt
 
+          # binfmt_misc (BLO-54097): the fleet kernel builds it as a module
+          # (kernel/build/config-amd64 CONFIG_BINFMT_MISC=m) but upstream's
+          # allowlist omits it, so the .ko never reaches the rootfs and a
+          # machine.kernel.modules entry cannot load it. Every Paperclip worker
+          # is now Talos, so without it no arc-dind host can register QEMU.
+          grep -qxF kernel/fs/binfmt_misc.ko hack/modules-amd64.txt \
+            || echo kernel/fs/binfmt_misc.ko >> hack/modules-amd64.txt
+
       - name: Resolve dind socket
         run: |
           set -euo pipefail
