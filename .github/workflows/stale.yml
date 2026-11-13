@@ -12,9 +12,9 @@ permissions:
 jobs:
   stale:
     timeout-minutes: 15
-    runs-on:
-      group: default-tools
-      labels: arc-light
+    # GitHub-hosted (BLO-55992): no Harbor or in-cluster reach needed; group 26
+    # (public-repo-ci) admits only default-branch workflow refs.
+    runs-on: ubuntu-latest
     steps:
       - name: Close stale issues and PRs
         uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # version: v11.0.0

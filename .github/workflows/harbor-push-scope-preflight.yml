@@ -34,7 +34,9 @@ permissions:
 
 jobs:
   probe:
-    runs-on: {group: default-tools, labels: arc-light}
+    # GitHub-hosted (BLO-55992, CTO ruling 2026-11-13): dispatch-only, so not
+    # fork-reachable; Harbor is reached via its public hostname.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout canonical script

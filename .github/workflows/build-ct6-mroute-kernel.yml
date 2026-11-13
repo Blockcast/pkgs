@@ -20,13 +20,15 @@ jobs:
     # moved that repo's kernel builds here. Blockcast/pkgs was not in #4457's
     # consumer inventory, so these three workflows kept pointing at a label with
     # zero registered runners and queued forever (BLO-40510). The tools
-    # `default-tools` group with the `arc-dind` label gives a local privileged
-    # dockerd on the same DOCKER_HOST, which is all the "Resolve dind socket"
-    # step below needs.
-    runs-on:
-      group: default-tools
-      labels: arc-dind
-    timeout-minutes: 600  # BLO-50264: tools-pool dind is capped at 4 CPUs; a 6.18.60 build overran 350m there
+    # GitHub-hosted since BLO-55992 (CTO ruling 2026-11-13): the tools
+    # `default-tools` group stops admitting public repos at the BLO-40782 flip.
+    # ubuntu-latest has a local dockerd at /var/run/docker.sock, which is all
+    # the docker steps below need; Harbor is reached by public hostname.
+    runs-on: ubuntu-latest
+    # GitHub-hosted jobs are hard-capped at 360m. BLO-50264 measured a 6.18.60
+    # build overrunning 350m on 4 CPUs (tools dind); hosted is also 4 vCPU, so
+    # this may time out -- see BLO-55992 for the fallback (group-26 dind twin).
+    timeout-minutes: 360
     permissions:
       contents: read
       packages: write

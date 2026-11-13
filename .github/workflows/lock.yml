@@ -11,9 +11,9 @@ permissions:
 jobs:
   action:
     timeout-minutes: 15
-    runs-on:
-      group: default-tools
-      labels: arc-light
+    # GitHub-hosted (BLO-55992): no Harbor or in-cluster reach needed; group 26
+    # (public-repo-ci) admits only default-branch workflow refs.
+    runs-on: ubuntu-latest
     steps:
       - name: Lock old issues
         uses: dessant/lock-threads@89ae32b08ed1a541efecbab17912962a5e38981c # version: v6.0.2

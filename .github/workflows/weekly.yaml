@@ -33,9 +33,9 @@ jobs:
       matrix:
         platform: [amd64]
         copy: [a, b]
-    runs-on:
-      group: default-tools
-      labels: arc-dind
+    # GitHub-hosted (BLO-55992): no Harbor or in-cluster reach needed; group 26
+    # (public-repo-ci) admits only default-branch workflow refs.
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
       - name: gather-system-info
@@ -106,9 +106,9 @@ jobs:
       fail-fast: false
       matrix:
         platform: [amd64]
-    runs-on:
-      group: default-tools
-      labels: arc-light
+    # GitHub-hosted (BLO-55992): no Harbor or in-cluster reach needed; group 26
+    # (public-repo-ci) admits only default-branch workflow refs.
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       # BLO-40437: diffoscope is on no runner image. diffoscope-minimal

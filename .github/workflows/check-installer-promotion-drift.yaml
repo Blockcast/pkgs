@@ -25,7 +25,9 @@ jobs:
   drift:
     # main IS the canonical copy; it cannot drift from itself.
     if: github.event.workflow_run.head_branch != github.event.repository.default_branch
-    runs-on: {group: default-tools, labels: arc-light}
+    # GitHub-hosted (BLO-55992): no Harbor or in-cluster reach needed; group 26
+    # (public-repo-ci) admits only default-branch workflow refs.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout the canonical copy
