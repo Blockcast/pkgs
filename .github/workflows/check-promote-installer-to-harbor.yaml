@@ -61,9 +61,9 @@ permissions:
 jobs:
   check:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on:
-      group: default-tools
-      labels: arc-light
+    # GitHub-hosted (BLO-55992): no Harbor or in-cluster reach needed; group 26
+    # (public-repo-ci) admits only default-branch workflow refs.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
