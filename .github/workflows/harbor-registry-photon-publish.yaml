@@ -1,0 +1,82 @@
+# Publish the patched Harbor registry-photon image (harbor-registry-photon/).
+#
+#   push to main / dispatch on main -> ./build.sh --push (refuses to repoint an
+#                                      existing tag)
+#
+# Split from harbor-registry-photon.yaml (BLO-55992) so the file holding
+# packages: write has no pull_request trigger. The image reference and every
+# pin come from harbor-registry-photon/release.env.
+
+name: harbor-registry-photon-publish
+
+on:
+  # README-only changes do not change the image, and a main push would hit
+  # build.sh's "tag already exists" refusal unless PATCH_REVISION is bumped.
+  push:
+    branches:
+      - main
+    paths:
+      - 'harbor-registry-photon/**'
+      - '!harbor-registry-photon/README.md'
+      - '.github/workflows/harbor-registry-photon-publish.yaml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: harbor-registry-photon-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    timeout-minutes: 240
+    if: github.ref == 'refs/heads/main'
+    # GitHub-hosted (BLO-55992): main-only, never fork-reachable; pushes to ghcr.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GIT_COMMIT: ${{ github.sha }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # version: v6.0.2
+
+      - name: Docker daemon
+        run: |
+          set -euo pipefail
+          docker version || { echo "docker daemon not reachable -- check dind / DOCKER_HOST" >&2; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # version: v4.1.0
+        with:
+          driver: docker
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # version: v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build, verify and push
+        id: push
+        run: |
+          set -euo pipefail
+          harbor-registry-photon/build.sh --push
+
+      - name: Record digest
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest from build.sh: '$DIGEST'" >&2; exit 1; }
+          repo="${REF%:*}"
+          {
+            echo "### harbor-registry-photon"
+            echo "- pushed: \`${REF}\`"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- deploy by digest: \`${repo}@${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
