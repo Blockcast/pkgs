@@ -191,7 +191,8 @@ jobs:
           esac
           echo "base=$BASE imager=$IMAGER ext=$EXT out=$OUT"
 
-          sock="${DOCKER_HOST#unix://}"
+          sock="${DOCKER_HOST:-}"  # unset on GitHub-hosted runners; set -u would abort the step
+          sock="${sock#unix://}"
           sock="${sock:-/var/run/docker.sock}"
           test -S "$sock" || { echo "docker socket not found at '$sock' (DOCKER_HOST=${DOCKER_HOST:-})" >&2; exit 1; }
 
