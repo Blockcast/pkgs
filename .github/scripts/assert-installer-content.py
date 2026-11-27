@@ -175,6 +175,32 @@ def pe_sections(blob: bytes) -> dict[str, bytes]:
     return out
 
 
+def cmdline_tokens(sections: dict[str, bytes]) -> list[str]:
+    """Whitespace-separated tokens of the UKI's own .cmdline (the first copy,
+    see pe_sections); [] when there is no .cmdline section."""
+    raw = sections.get(".cmdline", b"").split(b"\0", 1)[0]
+    return raw.decode("utf-8", "replace").split()
+
+
+def missing_cmdline_args(sections: dict[str, bytes], expected: list[str]) -> list[str]:
+    """The expected kernel arguments that are NOT whole tokens of .cmdline.
+
+    Whole tokens, not substrings: "state=online" must not be satisfied by
+    "memhp_default_state=online".  A kernel argument the imager silently
+    dropped is the failure this exists for -- the UKI still signs, boots and
+    looks fine, and only the node's behaviour (hot-added memory left offline)
+    shows it."""
+    have = set(cmdline_tokens(sections))
+    return [arg for arg in expected if arg not in have]
+
+
+def cmdline_failures(sections: dict[str, bytes], expected: list[str]) -> list[str]:
+    """One failure message per expected kernel argument missing from .cmdline."""
+    return [f"kernel argument {arg!r} is NOT in the UKI .cmdline -- the imager did "
+            "not bake it in, so a node booting this installer would not have it"
+            for arg in missing_cmdline_args(sections, expected)]
+
+
 def bzimage_release(linux: bytes) -> str:
     """Kernel release from a bzImage's setup header (Documentation/arch/x86/
     boot.rst): "HdrS" at 0x202, kernel_version pointer at 0x20E, +0x200."""
@@ -242,7 +268,7 @@ def parse_extensions_yaml(text: str) -> list[tuple[str, str]]:
                       text, re.M)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     # Plain help formatting: linux-amt's formatter_class kwarg trips the
     # egress entropy detector (BLO-51197), and only --help layout depended on it.
     ap = argparse.ArgumentParser(description=__doc__)
@@ -254,8 +280,16 @@ def main() -> int:
     ap.add_argument("--extension-tar",
                     help="flattened extension image (crane export); its amt.ko "
                          "vermagic becomes / must equal the expected release")
+    ap.add_argument("--expect-cmdline-arg", action="append", default=[],
+                    help="kernel argument that MUST be a whole token of the UKI's "
+                         ".cmdline, e.g. memhp_default_state=online (repeatable)")
     ap.add_argument("--zstd-cmd", default="zstd -dc",
                     help="command decompressing stdin->stdout (default: %(default)s)")
+    return ap
+
+
+def main() -> int:
+    ap = build_parser()
     args = ap.parse_args()
     if not (args.expect_krel or args.extension_tar):
         ap.error("need --expect-krel and/or --extension-tar")
@@ -282,6 +316,13 @@ def main() -> int:
     if uname != krel:
         print(f"warning: UKI .uname {uname!r} != .linux {krel!r}; .uname is a "
               "label, .linux is what boots (BLO-51197)", file=sys.stderr)
+
+    if args.expect_cmdline_arg:
+        # Counts and the expected args only: a UKI cmdline can carry per-node
+        # values, so it is not echoed into the job log wholesale.
+        print(f".cmdline: {len(cmdline_tokens(sections))} tokens; expected "
+              f"{args.expect_cmdline_arg}")
+        failures.extend(cmdline_failures(sections, args.expect_cmdline_arg))
 
     proc = subprocess.run(args.zstd_cmd, shell=True, input=sections[".initrd"],
                           stdout=subprocess.PIPE)

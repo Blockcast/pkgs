@@ -42,6 +42,17 @@ on:
           UKI; when set, both must also equal this.
         default: ''
         type: string
+      extra_kernel_args:
+        description: >-
+          Space-separated kernel arguments to bake into the Secure Boot signed
+          UKI (the imager's --extra-kernel-arg), e.g. memhp_default_state=online
+          so Talos onlines hot-added Proxmox memory. Each must then appear as a
+          whole token of the UKI .cmdline or the build fails. Empty = nothing
+          extra (default, unchanged builds). Use a distinct out_tag (also with
+          verify_only): <base_installer>-signed is the build without them and is
+          never overwritten.
+        default: ''
+        type: string
       overwrite_harbor_tag:
         description: >-
           Repoint an EXISTING harbor.blockcast.net/library/talos-installer tag at
@@ -108,6 +119,7 @@ jobs:
           EXT: ${{ inputs.extension }}
           OUT: ${{ inputs.out_tag }}
           KREL: ${{ inputs.kernel_release }}
+          EXTRA_KARGS: ${{ inputs.extra_kernel_args }}
           TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_KEY_PEM }}
           TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM: ${{ secrets.TALOS_SECUREBOOT_UKI_SIGNING_CERT_PEM }}
           TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM: ${{ secrets.TALOS_SECUREBOOT_PCR_SIGNING_KEY_PEM }}
@@ -216,6 +228,30 @@ jobs:
           rm -f "$secureboot_dir/uki-signing-key.pub" "$secureboot_dir/uki-signing-cert.pub"
           openssl rsa -in "$secureboot_dir/pcr-signing-key.pem" -check -noout
 
+          # Extra kernel arguments (extra_kernel_args). Validated by the script,
+          # then used twice from the same list: as imager flags below and as
+          # --expect-cmdline-arg in the content assertion, so nothing can be
+          # requested without being checked in the signed UKI.
+          extra_karg_flags=()
+          expect_karg_flags=()
+          # Capture first. `done < <(resolver)` would ignore the resolver's exit
+          # status under set -e, so a refused argument would silently build
+          # without it; an assignment propagates the failure and stops the step.
+          kargs="$(.github/scripts/resolve-extra-kernel-args.sh)"
+          # The tag <base_installer>-signed is the build WITHOUT extra arguments
+          # (what an empty out_tag derives to, or an explicit out_tag naming it):
+          # publishing a different image under it would overwrite that one in ghcr.
+          if [ -n "$kargs" ] && [ "$OUT" = "${BASE}-signed" ]; then
+            echo "out_tag must differ from ${BASE}-signed when extra_kernel_args is set: that tag is the build without them" >&2
+            exit 1
+          fi
+          while IFS= read -r karg; do
+            [ -n "$karg" ] || continue
+            echo "extra kernel argument: $karg"
+            extra_karg_flags+=("--extra-kernel-arg=$karg")
+            expect_karg_flags+=(--expect-cmdline-arg "$karg")
+          done <<< "$kargs"
+
           # DOCKER_CONFIG is required because the imager uses go-containerregistry
           # internally; the runner's docker login credStore is not visible there.
           compose_log="$RUNNER_TEMP/secureboot-imager.log"
@@ -228,6 +264,7 @@ jobs:
             "$IMAGER" secureboot-installer \
             --base-installer-image "$BASE" \
             --system-extension-image "$EXT" \
+            "${extra_karg_flags[@]}" \
             --arch amd64 2>&1 | tee "$compose_log"
           if grep -Eq 'secureboot: false|unsigned\.uki' "$compose_log"; then
             echo "imager log indicates an unsigned/non-SecureBoot UKI path; refusing to publish" >&2
@@ -260,6 +297,7 @@ jobs:
             --expect-extension amt-kmod \
             --extension-tar "$ext_tar" \
             "${krel_args[@]}" \
+            "${expect_karg_flags[@]}" \
             --zstd-cmd "docker run --rm -i --entrypoint /usr/bin/unzstd $IMAGER -c"
 
           if [ "${{ inputs.verify_only }}" = true ]; then
