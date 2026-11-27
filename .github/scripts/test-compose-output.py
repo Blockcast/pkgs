@@ -84,3 +84,14 @@ assert r.returncode != 0 and "out_tag must differ" in r.stderr, ("derived/explic
 assert run_step(loop + report, EXTRA_KARGS="   ", OUT=BASE_REF + "-signed").returncode == 0, "blanks resolve to nothing: no guard"
 assert run_step(loop + report, EXTRA_KARGS="", OUT=BASE_REF + "-signed").returncode == 0, "no extra args: the derived tag stays allowed"
 print("compose output: a refused extra_kernel_args stops the step; extra args cannot reuse the <base>-signed tag")
+
+# The compose job runs on ubuntu-latest, where DOCKER_HOST is NOT set. The socket
+# lookup runs under `set -u`, so reading $DOCKER_HOST unguarded killed every run
+# with "DOCKER_HOST: unbound variable" before anything was built (main, 11-13..11-27).
+sock_at = compose.index("          sock=")
+sock_block = textwrap.dedent(compose[sock_at:compose.index("          test -S", sock_at)])
+r = run_step(sock_block + 'echo "sock=$sock"')  # no DOCKER_HOST in the environment
+assert r.returncode == 0 and r.stdout.strip() == "sock=/var/run/docker.sock", ("DOCKER_HOST unset must fall back to the default socket", r)
+r = run_step(sock_block + 'echo "sock=$sock"', DOCKER_HOST="unix:///run/custom/docker.sock")
+assert r.returncode == 0 and r.stdout.strip() == "sock=/run/custom/docker.sock", ("a set DOCKER_HOST must still win", r)
+print("compose output: an unset DOCKER_HOST falls back to /var/run/docker.sock; a set one is honoured")
