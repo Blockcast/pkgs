@@ -28,6 +28,8 @@ on:
       - .github/scripts/test-compose-output.py
       - .github/scripts/assert-installer-content.py
       - .github/scripts/test-assert-installer-content.py
+      - .github/scripts/resolve-extra-kernel-args.sh
+      - .github/scripts/test-resolve-extra-kernel-args.sh
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
       - .github/workflows/harbor-push-scope-preflight.yml
@@ -50,6 +52,8 @@ on:
       - .github/scripts/test-compose-output.py
       - .github/scripts/assert-installer-content.py
       - .github/scripts/test-assert-installer-content.py
+      - .github/scripts/resolve-extra-kernel-args.sh
+      - .github/scripts/test-resolve-extra-kernel-args.sh
       - .github/workflows/check-promote-installer-to-harbor.yaml
       - .github/workflows/compose-signed-installer.yml
       - .github/workflows/harbor-push-scope-preflight.yml
@@ -79,6 +83,9 @@ jobs:
 
       - name: Installer content assertion readers (BLO-51197)
         run: python3 .github/scripts/test-assert-installer-content.py
+
+      - name: Extra kernel args validator (memory-hotplug rollout)
+        run: .github/scripts/test-resolve-extra-kernel-args.sh
 
       # A guard with no failing mutation is a comment. This removes each guard
       # in turn and requires the suite above to go red, so a guard cannot be
